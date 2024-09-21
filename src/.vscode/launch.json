@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Pintos: Project 1 debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "cwd": "${workspaceRoot}",
+            "MIMode": "gdb",
+            "program": "${workspaceRoot}/threads/build/kernel.o",
+            "miDebuggerServerAddress": "localhost:1234",
+            "preLaunchTask": "Pintos: Project 1 run",
+            "stopAtEntry": false,
+        },
+    ]
+}

@@ -1,0 +1,53 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Pintos: Project 1 build",
+            "type": "shell",
+            "command": "make",
+            "options": {
+                "cwd": "${workspaceRoot}/threads"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Pintos: Project 1 run",
+            "type": "shell",
+            "command": "pintos -v --gdb --qemu -- run ${input:testname}",
+            "isBackground": true,
+            "options": {
+                "cwd": "${workspaceRoot}/threads/build"
+            },
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": ".",
+                            "file": 1,
+                            "location": 2,
+                            "message": 3
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".",
+                        "endsPattern": ".",
+                    }
+                }
+            ],
+            "dependsOn": [
+                "Pintos: Project 1 build"
+            ],
+        },
+    ],
+    "inputs": [
+        {
+            "id": "testname",
+            "description": "Testname to run",
+            "type": "promptString"
+        }
+    ]
+}
