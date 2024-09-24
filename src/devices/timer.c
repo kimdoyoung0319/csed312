@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <round.h>
 #include <stdio.h>
+#include <list.h>
 #include "devices/pit.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
@@ -24,11 +25,19 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+/* List of alarms set currently. */
+static struct list alarm_list;
+
+/* Lock for manipulating alarm_list. */
+static struct lock alarm_list_lock;
+
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
+static void alarm_clock (void);
+static void set_alarm (int64_t ticks);
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -37,6 +46,10 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+
+  thread_create ("Alarm clock", PRI_DEFAULT, alarm_clock, NULL);
+  list_init (&alarm_list);
+  lock_init (&alarm_list_lock);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -92,8 +105,12 @@ timer_sleep (int64_t ticks)
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  set_alarm (ticks);
+
+  intr_disable ();
+  thread_block ();
+  intr_enable ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -243,4 +260,45 @@ real_time_delay (int64_t num, int32_t denom)
      the possibility of overflow. */
   ASSERT (denom % 1000 == 0);
   busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
+}
+
+static void 
+alarm_clock (void)
+{
+  struct list_elem *e;
+  struct alarm *current;
+
+  while (true)
+    {
+      for (e = list_begin (&alarm_list); e != list_end (&alarm_list); )
+        {
+          current = list_entry (e, struct alarm, elem);
+          
+          if (timer_elapsed(current->start) > current->ticks)
+            thread_unblock(current->t);
+
+          e = list_next (e);
+          
+          lock_acquire (&alarm_list_lock);
+          list_remove(current);
+          lock_release (&alarm_list_lock);
+        }
+
+        thread_yield ();
+    }
+}
+
+static void
+set_alarm (int64_t ticks)
+{
+  struct thread *current = thread_current();
+  struct alarm *new_alarm = (struct alarm *) malloc(sizeof(struct alarm));
+
+  new_alarm->t = current;
+  new_alarm->start = timer_ticks();
+  new_alarm->ticks = ticks;
+
+  lock_acquire (&alarm_list_lock);
+  list_push_back (&alarm_list, &new_alarm->elem);
+  lock_release (&alarm_list_lock);
 }
