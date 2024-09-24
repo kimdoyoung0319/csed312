@@ -29,6 +29,7 @@ static unsigned loops_per_tick;
 static struct list alarm_list;
 
 /* Lock for manipulating alarm_list. */
+// TODO: Is alarm_list must be handled with lock?
 static struct lock alarm_list_lock;
 
 static intr_handler_func timer_interrupt;
@@ -265,7 +266,7 @@ real_time_delay (int64_t num, int32_t denom)
 static void 
 alarm_clock (void)
 {
-  struct list_elem *e;
+  struct list_elem *e, *next;
   struct alarm *current;
 
   while (true)
@@ -273,15 +274,18 @@ alarm_clock (void)
       for (e = list_begin (&alarm_list); e != list_end (&alarm_list); )
         {
           current = list_entry (e, struct alarm, elem);
+          next = list_next (e);
           
-          if (timer_elapsed(current->start) > current->ticks)
+          
+          if (timer_elapsed(current->start) > current->ticks) {
             thread_unblock(current->t);
 
-          e = list_next (e);
-          
-          lock_acquire (&alarm_list_lock);
-          list_remove(current);
-          lock_release (&alarm_list_lock);
+            lock_acquire (&alarm_list_lock);
+            list_remove (current);
+            lock_release (&alarm_list_lock);
+          }
+
+          e = next;
         }
 
         thread_yield ();
