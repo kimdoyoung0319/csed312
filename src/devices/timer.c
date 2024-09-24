@@ -37,7 +37,7 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
-static void alarm_clock (void);
+static void check_alarm (void);
 static void set_alarm (int64_t ticks);
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
@@ -48,7 +48,6 @@ timer_init (void)
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 
-  thread_create ("Alarm clock", PRI_DEFAULT, alarm_clock, NULL);
   list_init (&alarm_list);
   lock_init (&alarm_list_lock);
 }
@@ -189,6 +188,7 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+  check_alarm ();
   thread_tick ();
 }
 
@@ -264,31 +264,22 @@ real_time_delay (int64_t num, int32_t denom)
 }
 
 static void 
-alarm_clock (void)
+check_alarm (void)
 {
-  struct list_elem *e, *next;
+  struct list_elem *e;
   struct alarm *current;
 
-  while (true)
+  for (e = list_begin (&alarm_list); e != list_end (&alarm_list); )
     {
-      for (e = list_begin (&alarm_list); e != list_end (&alarm_list); )
-        {
-          current = list_entry (e, struct alarm, elem);
-          next = list_next (e);
-          
-          
-          if (timer_elapsed(current->start) > current->ticks) {
-            thread_unblock(current->t);
+      current = list_entry (e, struct alarm, elem);
+      e = list_next (e);
+      
+      
+      if (timer_elapsed(current->start) >= current->ticks) {
+        thread_unblock(current->t);
 
-            lock_acquire (&alarm_list_lock);
-            list_remove (current);
-            lock_release (&alarm_list_lock);
-          }
-
-          e = next;
-        }
-
-        thread_yield ();
+        list_remove (current);
+      }
     }
 }
 
