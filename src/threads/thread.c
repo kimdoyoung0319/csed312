@@ -44,6 +44,15 @@ struct kernel_thread_frame
     thread_func *function;      /* Function to call. */
     void *aux;                  /* Auxiliary data for function. */
   };
+/* Stack to save donation list */
+struct thread_donation_list
+  {
+    struct list_elem elem;
+    struct thread *donator;
+    struct thread *donee;
+    int priority;
+  };
+static struct list donation_stack;
 
 /* Statistics. */
 static long long idle_ticks;    /* # of timer ticks spent idle. */
@@ -71,6 +80,8 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+static void thread_ready_list_check (void);
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -92,6 +103,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&donation_stack);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -200,6 +212,7 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  thread_ready_list_check ();
 
   return tid;
 }
@@ -336,6 +349,7 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  thread_ready_list_check ();
 }
 
 /* Returns the current thread's priority. */
@@ -493,7 +507,25 @@ next_thread_to_run (void)
   if (list_empty (&ready_list))
     return idle_thread;
   else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  {
+    struct thread *max_priority_thread = list_entry (list_front (&ready_list), struct thread, elem);
+    struct thread *check_thread;
+    struct list_elem *e;
+    struct list_elem *max_priority_elem = list_front (&ready_list);
+
+    for (e = list_begin (&ready_list); e != list_end (&ready_list); e = list_next (e))
+    {
+      check_thread = list_entry (e, struct thread, elem);
+      if (check_thread->priority > max_priority_thread->priority)
+      {
+        max_priority_thread = check_thread;
+        max_priority_elem = e;
+      }
+    }
+    
+    list_remove (max_priority_elem);
+    return max_priority_thread;
+  }
 }
 
 /* Completes a thread switch by activating the new thread's page
@@ -578,7 +610,75 @@ allocate_tid (void)
 
   return tid;
 }
-
+
+static void
+thread_ready_list_check (void)
+{
+  struct thread *t = thread_current ();
+
+  if (list_empty (&ready_list))
+    return;
+  
+  struct list_elem *e;
+  for (e = list_begin (&ready_list); e != list_end (&ready_list); e = list_next (e))
+  {
+    struct thread *t = list_entry (e, struct thread, elem);
+    if (t->priority > thread_current ()->priority)
+      thread_yield ();
+  }
+
+  return;
+}
+
+void
+thread_donate (struct thread *donator, struct thread *donee, struct list *donation_stack)
+{
+  if (donator == NULL || donee == NULL || donator->priority <= donee->priority)
+    return;
+
+  int tmp_priority = donee->priority;
+  donee->priority = donator->priority;
+  donator->priority = tmp_priority;
+
+  struct donation_stack_elem * e = (struct donation_stack_elem *) malloc (sizeof (struct donation_stack_elem));
+  e->donator = donator;
+  e->donee = donee;
+
+  list_push_back (&donation_stack, &e->elem);
+
+  return;
+}
+
+void
+thread_restore (struct list *waiter_list, struct thread *donee, struct list *donation_stack)
+{
+  if (list_empty (waiter_list) || donee == NULL || list_empty (donation_stack)) 
+    return;
+
+  struct donation_stack_elem *stack_elem = list_entry (list_pop_back (donation_stack), struct donation_stack_elem, elem);
+  int tmp_priority = stack_elem->donator->priority;
+  stack_elem->donator->priority = stack_elem->donee->priority;
+  stack_elem->donee->priority = tmp_priority;
+
+  struct list_elem *list_elem;
+  for (list_elem = list_begin (waiter_list); list_elem != list_end (waiter_list); list_elem = list_next (list_elem))
+  {
+    struct thread *t = list_entry (list_elem, struct thread, elem);
+    if (t == stack_elem->donator)
+    {
+      list_remove (list_elem);
+      break;
+    }
+  }
+
+  thread_unblock (stack_elem->donator);
+
+  // thread_yield (); // 추후 체크할 필요성 있음
+
+  return;
+}
+
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+

@@ -178,6 +178,7 @@ lock_init (struct lock *lock)
   ASSERT (lock != NULL);
 
   lock->holder = NULL;
+  list_init (&lock->donation_stack);
   sema_init (&lock->semaphore, 1);
 }
 
@@ -195,6 +196,9 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
+
+  if (lock->semaphore.value == 0) 
+    thread_donate (thread_current (), lock->holder, &lock->donation_stack);
 
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
@@ -230,6 +234,8 @@ lock_release (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
+
+  thread_restore ( &lock->semaphore.waiters, lock->holder, &lock->donation_stack);
 
   lock->holder = NULL;
   sema_up (&lock->semaphore);
