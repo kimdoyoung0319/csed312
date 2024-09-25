@@ -20,8 +20,10 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
-/* List of processes in THREAD_READY state, that is, processes
-   that are ready to run but not actually running. */
+/* List of processes in THREAD_READY state, that is, processes that are ready
+   to run but not actually running. Notice that you may want to call one of
+   the interfaces for ready_list - ready_list_enqueue(), ready_list_dequeue(),
+   ready_list_prioritize(). */
 static struct list ready_list;
 
 /* List of all processes.  Processes are added to this list
@@ -70,6 +72,10 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+static bool less (const struct list_elem *, const struct list_elem *, void *);
+static void ready_list_enqueue (struct thread *t);
+static struct thread *ready_list_dequeue (void);
+static bool ready_list_empty (void);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -201,6 +207,9 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  /* Checks if newly created thread should run. */
+  thread_yield ();
+
   return tid;
 }
 
@@ -237,8 +246,8 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
   t->status = THREAD_READY;
+  ready_list_enqueue (t);
   intr_set_level (old_level);
 }
 
@@ -307,9 +316,9 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
   cur->status = THREAD_READY;
+  if (cur != idle_thread) 
+    ready_list_enqueue (cur);
   schedule ();
   intr_set_level (old_level);
 }
@@ -336,6 +345,7 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  thread_yield ();
 }
 
 /* Returns the current thread's priority. */
@@ -490,10 +500,10 @@ alloc_frame (struct thread *t, size_t size)
 static struct thread *
 next_thread_to_run (void) 
 {
-  if (list_empty (&ready_list))
+  if (ready_list_empty ())
     return idle_thread;
   else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+    return ready_list_dequeue ();
 }
 
 /* Completes a thread switch by activating the new thread's page
@@ -577,6 +587,54 @@ allocate_tid (void)
   lock_release (&tid_lock);
 
   return tid;
+}
+
+/* Compares priorities of two threads, and returns true if priority of thread 
+   associated with argument A is less than the prority of thread associated
+   with argument B. There is no need to use AUX, hence passing NULL to 
+   list_sort() with this function is okay. */
+static bool
+less (const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+  struct thread *ta = list_entry (a, struct thread, elem);
+  struct thread *tb = list_entry (b, struct thread, elem);
+
+  return ta->priority < tb->priority;
+}
+
+/* Enqueues given thread T into ready_list. */
+static void
+ready_list_enqueue (struct thread *t)
+{
+  struct list_elem *e;
+  struct thread *cur;
+
+  ASSERT (t->status == THREAD_READY);
+
+  for (e = list_begin (&ready_list); e != list_end (&ready_list); 
+       e = list_next (e))
+    {
+      cur = list_entry (e, struct thread, elem);
+      if (t->priority > cur->priority)
+        break;
+    }
+  
+  list_insert (e, &t->elem);
+}
+
+/* Dequeues from ready_list and returns the dequeued thread. */
+static struct thread *
+ready_list_dequeue (void)
+{
+  struct list_elem *e = list_pop_front (&ready_list);
+  return list_entry (e, struct thread, elem);
+}
+
+/* Returns if ready_list is empty. */
+static bool
+ready_list_empty (void)
+{
+  return list_empty (&ready_list);
 }
 
 /* Offset of `stack' member within `struct thread'.
