@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -23,6 +24,11 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+/* Restrict Donation Depth */
+#define MAX_DONATION_DEPTH 8
+#define MAX_INT_MLFQS_NICE 20
+#define MIN_INT_MLFQS_NICE -20
 
 /* A kernel thread or user process.
 
@@ -93,6 +99,16 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
+    /* for Priority Scheduler and Donation */
+    struct list donator_list;
+    struct list_elem donator;
+    struct lock *lock_waiting;
+    int before_priority;
+
+    /* for MLFQS */
+    int int_mlfqs_nice;
+    int fp_mlfqs_recent_cpu;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -138,7 +154,6 @@ void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
-void thread_donate (struct thread *, struct thread *, struct list *);
-void thread_restore (struct list *, struct thread *, struct list *);
+void thread_ready_list_check (void);
 
 #endif /* threads/thread.h */
