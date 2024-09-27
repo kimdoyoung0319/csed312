@@ -21,8 +21,8 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
-/* List of processes in THREAD_READY state, that is, processes
-   that are ready to run but not actually running. */
+/* List of processes in THREAD_READY state, that is, processes that are ready
+   to run but not actually running. */
 static struct list ready_list;
 
 /* List of all processes.  Processes are added to this list
@@ -320,9 +320,9 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
+  cur->status = THREAD_READY;
   if (cur != idle_thread) 
     list_push_back (&ready_list, &cur->elem);
-  cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
 }
