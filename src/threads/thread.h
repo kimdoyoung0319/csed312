@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/synch.h"
+#include "threads/fixed.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -25,10 +26,10 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
-/* Restrict Donation Depth */
+/* Restrictions on donation depth. */
 #define MAX_DONATION_DEPTH 8
-#define MAX_INT_MLFQS_NICE 20
-#define MIN_INT_MLFQS_NICE -20
+#define MAX_NICE 20
+#define MIN_NICE -20
 
 /* A kernel thread or user process.
 
@@ -95,19 +96,15 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
+    int nice;                           /* Niceness. */ 
+    fixed recent_cpu;                   /* Recent CPU usage. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-
-    /* for Priority Scheduler and Donation */
-    struct list donator_list;
-    struct list_elem donator;
-    struct lock *lock_waiting;
-    int before_priority;
-
-    /* for MLFQS */
-    int int_mlfqs_nice;
-    int fp_mlfqs_recent_cpu;
+    struct list donator_list;           /* List of threads that have donated. */
+    struct list_elem donator;           /* List element for donating. */
+    struct lock *lock_waiting;          /* Lock this thread is waiting for. */
+    int before_priority;                /* Priority before donation. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -142,6 +139,8 @@ const char *thread_name (void);
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
 
+void thread_check (void);
+
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
@@ -153,7 +152,5 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
-
-void thread_ready_list_check (void);
 
 #endif /* threads/thread.h */

@@ -132,7 +132,7 @@ sema_up (struct semaphore *sema)
   }
   sema->value++;
   
-  thread_ready_list_check ();
+  thread_check ();
   intr_set_level (old_level);
 }
 
