@@ -188,6 +188,7 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+
   check_alarm ();
   thread_tick ();
 }
@@ -274,9 +275,8 @@ check_alarm (void)
       current = list_entry (e, struct alarm, elem);
       e = list_next (e);
       
-      
-      if (timer_elapsed(current->start) >= current->ticks) {
-        thread_unblock(current->t);
+      if (timer_elapsed (current->start) >= current->ticks) {
+        thread_unblock (current->t);
 
         list_remove (current);
       }
