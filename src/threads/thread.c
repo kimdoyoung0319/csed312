@@ -1,5 +1,6 @@
 // TODO: Format comments under 70 columns (convention on original Pintos code).
 // TODO: Format comments with two trailing spaces after period.
+// TODO: There was a part of the code that I suspected to be problematic...
 #include "threads/thread.h"
 #include <debug.h>
 #include <stddef.h>
@@ -182,7 +183,9 @@ thread_tick (void)
   if (thread_mlfqs) {
     mlfqs_update ();
     mlfqs_organize ();
-    intr_yield_on_return ();
+
+    if (timer_ticks () % 4 == 0)
+      intr_yield_on_return ();
   }
 }
 
@@ -433,7 +436,7 @@ thread_set_nice (int nice)
   enum intr_level old_level = intr_disable ();
   struct thread *t = thread_current ();
 
-  t->nice = nice < MAX_NICE ? nice > MIN_NICE ? nice : MIN_NICE : MAX_NICE;
+  t->nice = nice < MAX_NICE ? (nice > MIN_NICE ? nice : MIN_NICE) : MAX_NICE;
 
   if (t != idle_thread)
     t->priority = calculate_priority (t);
@@ -907,13 +910,16 @@ update_load_avg (void)
                       div_x_n (n_to_x (ready_threads), 60));
 }
 
-/* Calculates new priority of thread T according to its recent_cpu and nice. 
-   This function cuts result priority when it is out of boundary 
+/* Calculates new priority of thread T according to its recent_cpu 
+   and nice. This function cuts result when it is out of boundary 
    [PRI_MIN, PRI_MAX]. */
 static int
 calculate_priority (struct thread *t) {
-  int recent_cpu_divided_by_4 = x_to_n_near (div_x_n (t->recent_cpu, 4));
-  int result = PRI_MAX - recent_cpu_divided_by_4 - 2*(t->nice);
+
+  /* result = PRI_MAX - (recent_cpu / 4) - (nice * 2)
+     This result is truncated to nearest integer. */
+  int result = x_to_n_near (sub_x_n (sub_x_y (n_to_x (PRI_MAX), 
+                            div_x_n (t->recent_cpu, 4)), 2*(t->nice)));
 
   if (result < PRI_MIN)
     return PRI_MIN;
@@ -932,9 +938,7 @@ calculate_recent_cpu (struct thread *t)
 
   /* result = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice */
   return add_x_n (mul_x_y (div_x_y (load_avg_doubled,
-                  add_x_n (load_avg_doubled, 1)), 
-                  t->recent_cpu),
-                  t->nice);
+                  add_x_n (load_avg_doubled, 1)), t->recent_cpu), t->nice);
 }
 
 /* Offset of `stack' member within `struct thread'.
