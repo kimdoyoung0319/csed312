@@ -1,6 +1,18 @@
 # Project 1 - Design Report (Team 28)
 ## Project Description
-Todo
+Project 1은 크게 3가지를 구현해야 한다.
+1. Alarm Clock
+2. Priority Scheduler
+3. Advanced Scheduler
+
+### Alarm Clock
+devices/timer.c 에 위치한 timer_sleep 함수를 다시 구현하는 것이 핵심 사항이다. 기존에 구현된 timer_sleep은 함수가 계속 실행되면서 while loop 내에서 tick이 넘을 때까지 확인하게 되는데, 이는 CPU를 계속해서 점유하게 되므로 busy waiting 을 하게 된다. 따라서 새롭게 해당 함수를 구현하여 thread_block 을 통해 thread를 실행되지 않도록 바꿔주도록 새롭게 Alarm Clock을 구현해야 한다.
+
+### Priority Scheduler
+현재 구현된 Scheduler 같은 경우에는 Round-Robin으로 구성되어 있어 Time Slice에 따라 균일하게 thread를 나누게 된다. 하지만 이는 priority에 따라서 중요한 thread를 우선적으로 실행할 수 없게 된다. 따라서 Scheduler 를 새롭게 구현하여 priority를 기반의 priority scheduler를 구현해야 한다. highest priority 인 thread를 우선적으로 실행될 수 있도록 하며, 새로운 thread가 생기거나 기존 thread의 priority가 바뀌게 된다면 마찬가지고 가장 높은 priority 를 가진 thread를 실행하도록 한다.
+
+### Advanced Scheduler
+priority scheduler의 경우 기존에 결정된 priority를 기반으로 가장 높은 priority의 thread만 실행시키게 된다. Advanced Scheduler의 경우 4.4BSD의 MLFQS를 구현하는 것으로 MLFQS가 자동으로 nice 값과, recent_cpu 값 등등을 기반으로 priority 값을 조절하여 이를 기반으로 가장 높은 priority를 실행하게 된다.
 
 ## Code Analysis
 ### Thread - thread.h / thread.c
@@ -711,4 +723,10 @@ condition에 있는 모든 waiters 에게 cond_signal을 통해 singal을 차례
 ToDo
 
 ## Design Description
-ToDo
+### Alarm Clock
+
+
+### Priority Scheduler & Priority Donation
+
+
+### Advanced Scheduler
