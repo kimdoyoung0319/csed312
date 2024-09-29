@@ -184,7 +184,7 @@ thread_tick (void)
     mlfqs_update ();
     mlfqs_organize ();
 
-    if (timer_ticks () % 4 == 0)
+    if (timer_ticks () % TIME_SLICE == 0)
       intr_yield_on_return ();
   }
 }
@@ -807,7 +807,7 @@ mlfqs_update (void)
   struct thread *cur = thread_current ();
   cur->recent_cpu = add_x_n (cur->recent_cpu, 1);
 
-  if (timer_ticks () % 4 == 0)
+  if (timer_ticks () % TIME_SLICE == 0)
     update_priorities ();
   
   if (timer_ticks () % TIMER_FREQ == 0) {
