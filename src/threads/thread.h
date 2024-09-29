@@ -4,6 +4,8 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
+#include "threads/fixed.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -23,6 +25,11 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+/* Restrictions on donation depth. */
+#define MAX_DONATION_DEPTH 8
+#define MAX_NICE 20
+#define MIN_NICE -20
 
 /* A kernel thread or user process.
 
@@ -89,9 +96,15 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
+    int nice;                           /* Niceness. */ 
+    fixed recent_cpu;                   /* Recent CPU usage. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+    struct list donator_list;           /* List of threads that have donated. */
+    struct list_elem donator;           /* List element for donating. */
+    struct lock *lock_waiting;          /* Lock this thread is waiting for. */
+    int before_priority;                /* Priority before donation. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -125,6 +138,8 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+
+void thread_check (void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
