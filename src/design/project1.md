@@ -728,13 +728,9 @@ timer_init (void)
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 ```
-타이머를 초기화시키는 함수로, pit_configure_channel과 intr_register_ext 두 함수를 호출한다. pit_configure_channel 함수 호출은 내부 진동자로 타이머 신호를 발생시키는 
-PIT(Programmable Interval Timer)의 0번 채널을 2번 모드와 TIMER_FREQ로 설정한다. x86 아키텍처에서 PIT의 0번 채널은 PIC(Programmable Interrupt Controller)의 
-interrupt line 0에 연결되어 있다. PIC는 이를 다시 interrupt number로 변환하여 CPU에 전달하고, CPU는 메모리의 IDT(Interrupt Descripter Table)을 참조하여 인터럽트 
-발생 시마다 타이머 인터럽트 핸들러를 호출한다.
+타이머를 초기화시키는 함수로, pit_configure_channel과 intr_register_ext 두 함수를 호출한다. pit_configure_channel 함수 호출은 내부 진동자로 타이머 신호를 발생시키는 PIT(Programmable Interval Timer)의 0번 채널을 2번 모드와 TIMER_FREQ로 설정한다. x86 아키텍처에서 PIT의 0번 채널은 PIC(Programmable Interrupt Controller)의 interrupt line 0에 연결되어 있다. PIC는 이를 다시 interrupt number로 변환하여 CPU에 전달하고, CPU는 메모리의 IDT(Interrupt Descripter Table)을 참조하여 인터럽트 발생 시마다 타이머 인터럽트 핸들러를 호출한다.
 
-intr_register_ext는 위에서 설명한 인터럽트 핸들러를 등록하는 함수이다. Interrupt number 0x20에 할당된 인터럽트의 인터럽트 핸들러를 timer_interrupt로 등록하여,
-해당 인터럽트가 발생할 때마다 timer_interrupt가 호출되도록 한다.
+intr_register_ext는 위에서 설명한 인터럽트 핸들러를 등록하는 함수이다. Interrupt number 0x20에 할당된 인터럽트의 인터럽트 핸들러를 timer_interrupt로 등록하여, 해당 인터럽트가 발생할 때마다 timer_interrupt가 호출되도록 한다.
 
 __timer_calibrate__
 ```C
@@ -764,12 +760,9 @@ timer_calibrate (void)
   printf ("%'"PRIu64" loops/s.\n", (uint64_t) loops_per_tick * TIMER_FREQ);
 }
 ```
-실제 시간과 유사한 딜레이를 구현하기 위해, loops_per_tick을 초기화하는 함수이다. PIT에서 발생하는 인터럽트 신호는 1초에 TIMER_FREQ회, 즉 100Hz로 설정되어 있기 때문에 밀리세컨드 이하의
-시간을 timer_ticks만으로 측정하기는 어렵다. 따라서, Pintos에서는 밀리세컨드 이하의 시간 단위를 위한 sleep을 위해서 먼저 1초에 아무것도 하지 않는 loop가 몇번 실행되는지 확인한다. 
-이후 sleep을 할 때는, 해당 측정에서와 같은 loop를 실행하도록 해 정밀한 sleep이 가능하게 한다. 이때 1초에 loop가 몇 번 실행되는지를 나타내는 변수가 loops_per_tick이며, 이를 
-초기화하는 함수가 timer_calibrate이다.
+실제 시간과 유사한 딜레이를 구현하기 위해, loops_per_tick을 초기화하는 함수이다. PIT에서 발생하는 인터럽트 신호는 1초에 TIMER_FREQ회, 즉 100Hz로 설정되어 있기 때문에 밀리세컨드 이하의 시간을 timer_ticks만으로 측정하기는 어렵다. 따라서, Pintos에서는 밀리세컨드 이하의 시간 단위를 위한 sleep을 위해서 먼저 1초에 아무것도 하지 않는 loop가 몇번 실행되는지 확인한다. 이후 sleep을 할 때는, 해당 측정에서와 같은 loop를 실행하도록 해 정밀한 sleep이 가능하게 한다. 이때 1초에 loop가 몇 번 실행되는지를 나타내는 변수가 loops_per_tick이며, 이를 초기화하는 함수가 timer_calibrate이다.
 
-동작을 자세히 살펴보면, 먼저 loops_per_tick을 2^10으로 초기화한 후 이에 2씩 곱하며 too_many_loops가 실패하는 
+동작을 자세히 살펴보면, 먼저 loops_per_tick을 2^10으로 초기화한 후 이에 2씩 곱하며 too_many_loops가 실패하는 loops_per_tick 값을 찾는다. 이렇게 찾은 loops_per_tick은 아직 정확하지 않으므로, 1로 설정된 비트 아래 8개 비트도 하나씩 1로 설정하며 too_many_loops 함수를 실행시키고, 만약 함수 실행이 실패했다면 해당 비트도 1로 업데이트한다. 이렇게 만들어진 bit pattern이 loops_per_tick이 된다.
 
 __timer_ticks__
 ```C
@@ -782,12 +775,183 @@ timer_ticks (void)
   return t;
 }
 ```
+현재 tick 값을 반환하는 함수이다.
 
+__timer_elapsed__
+```C
+int64_t
+timer_elapsed (int64_t then) 
+{
+  return timer_ticks () - then;
+}
+```
+인자 then으로부터 지난 시간을 tick 단위로 반환하는 함수이다.
 
+__timer_sleep__
+```C
+void
+timer_sleep (int64_t ticks) 
+{
+  int64_t start = timer_ticks ();
 
+  ASSERT (intr_get_level () == INTR_ON);
+  while (timer_elapsed (start) < ticks) 
+    thread_yield ();
+}
+```
+인자 ticks만큼 현재 실행중인 thread의 실행을 멈추고, 다른 쓰레드에 실행 우선권을 넘겨주는 함수이다. timer_sleep의 원래 구현에서 주목할 점은 sleep의 시작 시간 start부터 지난 시간이 ticks보다 작은 동안 다른 thread에 실행 우선권을 넘겨주는 busy waiting 방식을 사용하고 있다는 점이다. 
 
+Pintos의 현재 구현은 Round-Robin 방식을 사용하고 있어 thread_yield시 ready queue의 다음 thread가 실행되기 때문에 busy waiting을 하더라도 다른 thread의 실행이 가능하다. 하지만 만약 Priority Queue 기반 scheduling을 사용한다면, timer_sleep을 호출한 thread의 우선순위가 다른 thread들보다 높을 경우 timer_sleep을 호출한 thread가 sleep하는 동안 다른 thread들이 실행되지 못해 시스템 자원을 불필요하게 낭비하게 된다.
 
+때문에 이번 과제에서는 Priority Queue 기반 scheduling을 구현하기에 앞서, 주어진 timer_sleep 구현을 busy waiting이 아닌 thread_block 기반으로 변경하여, sleep하는 thread가 불필요하게 다른 thread들의 실행을 막지 않도록 하는 것을 첫 번째 목표로 한다.
 
+__timer_msleep__, __timer_usleep_, __timer__nsleep__
+```C
+void
+timer_msleep (int64_t ms) 
+{
+  real_time_sleep (ms, 1000);
+}
+```
+```C
+void
+timer_usleep (int64_t us) 
+{
+  real_time_sleep (us, 1000 * 1000);
+}
+```
+```C
+void
+timer_nsleep (int64_t ns) 
+{
+  real_time_sleep (ns, 1000 * 1000 * 1000);
+}
+```
+실제 시간에 기반하여 현재 thread가 밀리세컨드, 마이크로세컨드, 나노세컨드 단위로 sleep하도록 하는 함수이다.
+
+```C
+void
+timer_mdelay (int64_t ms) 
+{
+  real_time_delay (ms, 1000);
+}
+```
+```C
+void
+timer_udelay (int64_t us) 
+{
+  real_time_delay (us, 1000 * 1000);
+}
+```
+```C
+void
+timer_ndelay (int64_t ns) 
+{
+  real_time_delay (ns, 1000 * 1000 * 1000);
+}
+```
+실제 시간에 기반하여 현재 thread가 밀리세컨드, 마이크로세컨드, 나노세컨드 단위로 실행을 미루도록 하는 함수이다.
+
+위에서 설명한 timer_msleep, timer_usleep, timer_nsleep 함수와 delay류 함수의 가장 큰 차이점은 sleep 함수들은 timer_sleep 함수를 이용하며 1틱 이하의 타이밍을 맞추기 위해서만 busy waiting을 이용하지만, delay 함수들은 timer_sleep 함수의 구현과 상관없이 무조건 busy waiting을 사용한다는 점이다. 때문에, 일반적인 프로그램에서 timer_mdelay, timer_udelay, timer_ndelay를 사용하는것은 비효율적이다.
+
+__timer_print_stats__
+```C
+void
+timer_print_stats (void) 
+{
+  printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
+}
+```
+타이머에 관련된 statistics를 출력하는 함수이다.
+
+__timer_interrupt__
+```C
+static void
+timer_interrupt (struct intr_frame *args UNUSED)
+{
+  ticks++;
+  thread_tick ();
+}
+```
+타이머 인터럽트 핸들러이다. PIT에 의해 발생하는 매 신호마다 호출되어 현재 ticks 값을 업데이트하고, thread_tick 함수를 호출하여 타이머 statistics를 업데이트하고 만약 현재 thread가 time slice로 할당된 시간 이상을 사용하였을경우 yield시킨다.
+
+__too_many_loops__
+```C
+static bool
+too_many_loops (unsigned loops) 
+{
+  /* Wait for a timer tick. */
+  int64_t start = ticks;
+  while (ticks == start)
+    barrier ();
+
+  /* Run LOOPS loops. */
+  start = ticks;
+  busy_wait (loops);
+
+  /* If the tick count changed, we iterated too long. */
+  barrier ();
+  return start != ticks;
+}
+```
+loops_per_tick값을 조율하기 위해 쓰이는 함수이다. 인자 loops만큼의 loop를 실행하여, 만약 해당 실행 이후에 ticks 값이 변하였다면 true를, ticks 값이 변하였다면 false를 반환한다. 달리 설명하자면, 인자로 넘어온 loop 횟수가 너무 많아 한 tick 내에 실행 불가능할 경우 true를, 아닌 경우 false를 반환하는 함수이다.
+
+too_many_loops의 구현에서, barrior 매크로가 쓰인 것을 볼 수 있다. barrior는 컴파일러에 의한 순서 재배치(reordering), 코드 변경 혹은 삭제를 막는 코드이다. 첫 번째 while문을 보면, while의 조건을 검사하기 전에 start가 ticks로 초기화되기 때문에 컴파일러는 이를 infinite loop로 변경하려 한다. 하지만, 실제로는 while block이 실행되는 도중 타이머 인터럽트가 발생하여 ticks의 값이 변경될 수 있기 때문에 컴파일러가 이러한 최적화를 한다면 이는 틀린 코드가 된다. 따라서, 명시적으로 컴파일러가 코드를 변경하지 못하도록 barrior를 삽입하여 불필요하고 부정확한 최적화를 막는다.
+
+__busy_wait__
+```C
+static void NO_INLINE
+busy_wait (int64_t loops) 
+{
+  while (loops-- > 0)
+    barrier ();
+}
+```
+인자 loops만큼 반복하며 busy wait을 하는 함수이다. 이 함수에서 barrior는 컴파일러가 while loop의 body가 없어 while loop 자체를 삭제해버리지 않게 하기 위해 삽입되었다. 
+
+__real_time_sleep__
+```C
+static void
+real_time_sleep (int64_t num, int32_t denom) 
+{
+  /* Convert NUM/DENOM seconds into timer ticks, rounding down.
+          
+        (NUM / DENOM) s          
+     ---------------------- = NUM * TIMER_FREQ / DENOM ticks. 
+     1 s / TIMER_FREQ ticks
+  */
+  int64_t ticks = num * TIMER_FREQ / denom;
+
+  ASSERT (intr_get_level () == INTR_ON);
+  if (ticks > 0)
+    {
+      /* We're waiting for at least one full timer tick.  Use
+         timer_sleep() because it will yield the CPU to other
+         processes. */                
+      timer_sleep (ticks); 
+    }
+  else 
+    {
+      /* Otherwise, use a busy-wait loop for more accurate
+         sub-tick timing. */
+      real_time_delay (num, denom); 
+    }
+}
+```
+인자 num을 denom으로 나눈 초 단위의 시간만큼 현재 thread를 sleep시키는 함수이다. timer_msleep, timer_usleep, timer_nsleep의 구현을 위해 쓰인다. real_time_sleep은 상술한 바와 같이, tick 단위의 sleep을 위해서는 timer_sleep을 이용하고 1 tick 이하의 타이밍 정확성을 위해서만 busy waiting을 이용한다. 현재의 구현에서는 timer_sleep 또한 busy waiting을 하기 때문에 큰 의미는 없지만, 만약 timer_sleep이 busy waiting이 아닌 좀 더 효율적인 방식을 이용한다면 아래의 real_time_delay보다 효율적일 것이다.
+
+__real_time_delay__
+```C
+static void
+real_time_delay (int64_t num, int32_t denom)
+{
+  /* Scale the numerator and denominator down by 1000 to avoid
+     the possibility of overflow. */
+  ASSERT (denom % 1000 == 0);
+  busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
+}
+```
+인자 num을 denom으로 나눈 초 단위의 시간만큼 현재 thread의 실행을 지연시키는 함수이다. timer_mdelay, timer_udelay, timer_ndelay의 구현을 위해 쓰인다. 상술한 바와 같이 busy waiting을 하기 때문에 비효율적이며, 특별한 경우가 아닌 이상 real_time_sleep과 이를 이용하는 timer_msleep, timer_usleep, timer_nsleep을 사용하는 것이 더 효율적이다.
 
 ## Design Description
 ### Alarm Clock
