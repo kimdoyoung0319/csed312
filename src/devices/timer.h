@@ -10,9 +10,9 @@
 
 struct alarm 
   {
-    struct list_elem elem;
-    struct thread *t;
-    int64_t start, ticks;
+    struct list_elem elem;      /* List element for alarm_list. */ 
+    struct thread *t;           /* Thread to awaken. */
+    int64_t start, ticks;       /* Start time and duration of alarm. */
   };
 
 void timer_init (void);

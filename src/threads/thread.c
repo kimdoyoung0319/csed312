@@ -1,6 +1,3 @@
-// TODO: Format comments under 70 columns (convention on original Pintos code).
-// TODO: Format comments with two trailing spaces after period.
-// TODO: There was a part of the code that I suspected to be problematic...
 #include "threads/thread.h"
 #include <debug.h>
 #include <stddef.h>
@@ -25,14 +22,14 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
-/* List of processes in THREAD_READY state, that is, processes that are ready
-   to run but not actually running. This list is not used when kernel uses
-   multilevel feedback queue scheduling. */
+/* List of processes in THREAD_READY state, that is, processes that
+   are ready to run but not actually running.  This list is not used
+   when kernel uses multilevel feedback queue scheduling. */
 static struct list ready_list;
 
-/* Array of lists that holds processes in THREAD_READY state with certain 
-   priority. This is used instead of ready_list when the kernel uses 
-   multilevel feedback queue scheduling. */
+/* Array of lists that holds processes in THREAD_READY state with 
+   certain priority.  This is used instead of ready_list when the 
+   kernel uses multilevel feedback queue scheduling. */
 static struct list mlfqs_queues[PRI_MAX + 1];
 
 /* List of all processes.  Processes are added to this list
@@ -79,8 +76,8 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 
-/* Current system's averge load. Used to calculate recent CPU usage of a 
-   thread. */
+/* Current system's averge load. Used to calculate recent CPU usage 
+   of a thread. */
 fixed load_avg;
 
 static void kernel_thread (thread_func *, void *aux);
@@ -631,11 +628,12 @@ next_thread_to_run (void)
   return max_t;
 }
 
-/* Multilevel feedback queue scheduler version of next_thread_to_run(). 
-   Returns thread that has highest priority among those in feedback queues. 
-   If there exist more than one threads having highest priority, returns
-   thread that were in ready queue the longest. If all feedback queues are
-   empty, return idle thread. */
+/* Multilevel feedback queue scheduler version of 
+   next_thread_to_run(). Returns thread that has highest priority 
+   among those in feedback queues. If there exist more than one 
+   threads having highest priority, returns thread that were in ready
+   queue the longest. If all feedback queues are empty, return idle 
+   thread. */
 static struct thread *
 mlfqs_next_thread_to_run (void)
 {
@@ -794,11 +792,13 @@ mlfqs_max_priority (void)
   return max;
 }
 
-/* Updates statistics that are needed for multilevel feedback queue scheduling. 
-   This function should be called on every ticks by timer interrupt handler. 
+/* Updates statistics that are needed for multilevel feedback queue 
+   scheduling. This function should be called on every ticks by timer 
+   interrupt handler. 
    
    Notice that this function must called only when the kernel uses
-   multilevel feedback queue scheduling, i.e. when thread_mlfqs is enabled. */
+   multilevel feedback queue scheduling, i.e. when thread_mlfqs is 
+   enabled. */
 static void
 mlfqs_update (void)
 {
@@ -816,9 +816,9 @@ mlfqs_update (void)
   }
 }
 
-/* Organizes threads into ready queues according to their priorities. This
-   function must be called only when the kernel uses multilevel feedback queue
-   scheduling. */
+/* Organizes threads into ready queues according to their priorities.
+   This function must be called only when the kernel uses multilevel 
+   feedback queue scheduling. */
 static void
 mlfqs_organize (void)
 {
@@ -887,8 +887,8 @@ update_recent_cpu (void)
     }
 }
 
-/* Updates load_avg value according to the number of the threads that are
-   currently either running or ready, and not idle thread. */
+/* Updates load_avg value according to the number of the threads 
+   that are currently either running or ready, and not idle thread. */
 static void
 update_load_avg (void)
 {
@@ -930,7 +930,8 @@ calculate_priority (struct thread *t) {
   return result;
 }
 
-/* Calculates new recent_cpu value of thread T according to current load_avg. */
+/* Calculates new recent_cpu value of thread T according to current 
+   load_avg. */
 static fixed
 calculate_recent_cpu (struct thread *t) 
 {

@@ -29,7 +29,6 @@ static unsigned loops_per_tick;
 static struct list alarm_list;
 
 /* Lock for manipulating alarm_list. */
-// TODO: Is alarm_list must be handled with lock?
 static struct lock alarm_list_lock;
 
 static intr_handler_func timer_interrupt;
@@ -264,6 +263,8 @@ real_time_delay (int64_t num, int32_t denom)
   busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
 }
 
+/* Checks alarm lists, and rings alarm if there exists a thread that
+   needs to be awakened. */
 static void 
 check_alarm (void)
 {
@@ -283,6 +284,8 @@ check_alarm (void)
     }
 }
 
+/* Sets an alarm that rings after TICKS, and awakens current thread. 
+   */
 static void
 set_alarm (int64_t ticks)
 {
