@@ -720,7 +720,74 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 condition에 있는 모든 waiters 에게 cond_signal을 통해 singal을 차례로 전파하며 모든 waiters를 block에서 해제하게 되는 방식으로 구성되어 있다.
 
 ### Timer - timer.h / timer.c
-ToDo
+__timer_init__
+```C
+void
+timer_init (void) 
+{
+  pit_configure_channel (0, 2, TIMER_FREQ);
+  intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+```
+타이머를 초기화시키는 함수로, pit_configure_channel과 intr_register_ext 두 함수를 호출한다. pit_configure_channel 함수 호출은 내부 진동자로 타이머 신호를 발생시키는 
+PIT(Programmable Interval Timer)의 0번 채널을 2번 모드와 TIMER_FREQ로 설정한다. x86 아키텍처에서 PIT의 0번 채널은 PIC(Programmable Interrupt Controller)의 
+interrupt line 0에 연결되어 있다. PIC는 이를 다시 interrupt number로 변환하여 CPU에 전달하고, CPU는 메모리의 IDT(Interrupt Descripter Table)을 참조하여 인터럽트 
+발생 시마다 타이머 인터럽트 핸들러를 호출한다.
+
+intr_register_ext는 위에서 설명한 인터럽트 핸들러를 등록하는 함수이다. Interrupt number 0x20에 할당된 인터럽트의 인터럽트 핸들러를 timer_interrupt로 등록하여,
+해당 인터럽트가 발생할 때마다 timer_interrupt가 호출되도록 한다.
+
+__timer_calibrate__
+```C
+void
+timer_calibrate (void) 
+{
+  unsigned high_bit, test_bit;
+
+  ASSERT (intr_get_level () == INTR_ON);
+  printf ("Calibrating timer...  ");
+
+  /* Approximate loops_per_tick as the largest power-of-two
+     still less than one timer tick. */
+  loops_per_tick = 1u << 10;
+  while (!too_many_loops (loops_per_tick << 1)) 
+    {
+      loops_per_tick <<= 1;
+      ASSERT (loops_per_tick != 0);
+    }
+
+  /* Refine the next 8 bits of loops_per_tick. */
+  high_bit = loops_per_tick;
+  for (test_bit = high_bit >> 1; test_bit != high_bit >> 10; test_bit >>= 1)
+    if (!too_many_loops (loops_per_tick | test_bit))
+      loops_per_tick |= test_bit;
+
+  printf ("%'"PRIu64" loops/s.\n", (uint64_t) loops_per_tick * TIMER_FREQ);
+}
+```
+실제 시간과 유사한 딜레이를 구현하기 위해, loops_per_tick을 초기화하는 함수이다. PIT에서 발생하는 인터럽트 신호는 1초에 TIMER_FREQ회, 즉 100Hz로 설정되어 있기 때문에 밀리세컨드 이하의
+시간을 timer_ticks만으로 측정하기는 어렵다. 따라서, Pintos에서는 밀리세컨드 이하의 시간 단위를 위한 sleep을 위해서 먼저 1초에 아무것도 하지 않는 loop가 몇번 실행되는지 확인한다. 
+이후 sleep을 할 때는, 해당 측정에서와 같은 loop를 실행하도록 해 정밀한 sleep이 가능하게 한다. 이때 1초에 loop가 몇 번 실행되는지를 나타내는 변수가 loops_per_tick이며, 이를 
+초기화하는 함수가 timer_calibrate이다.
+
+동작을 자세히 살펴보면, 먼저 loops_per_tick을 2^10으로 초기화한 후 이에 2씩 곱하며 too_many_loops가 실패하는 
+
+__timer_ticks__
+```C
+int64_t
+timer_ticks (void) 
+{
+  enum intr_level old_level = intr_disable ();
+  int64_t t = ticks;
+  intr_set_level (old_level);
+  return t;
+}
+```
+
+
+
+
+
+
 
 ## Design Description
 ### Alarm Clock
