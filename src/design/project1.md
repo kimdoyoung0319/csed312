@@ -1576,14 +1576,36 @@ free (void *p)
 ```
 free는 malloc으로 할당받은 메모리 block을 free하는 함수이다. free는 malloc으로 메모리 block을 할당받는 과정의 정확히 반대 과정을 수행한다. 먼저 해당 block이 작은 block이라면, 해당 블록을 free_list에 다시 넣어 다음 malloc 호출에서 이를 재사용할 수 있게 한다. 만약 block을 free한 이후 arena가 완전히 비어있다면, 해당 arena 전체를 free_list에서 삭제하고 palloc_free_page로 free해준다.
 
-만약 free하고자 하는 block이 큰 block이라면, palloc_free_multiple을 호출하여 해당 arena에 속한 페이지만큼을 free해준다.
+만약 free하고자 하는 block이 큰 block이라면, palloc_free_multiple을 호출하여 해당 arena에 속한 페이지만큼을 free해준다. 
 
+free 또한 desc를 조작하는 과정에서 해당 desc의 lock을 acquire하려 시도하고, acquire에 실패할 경우 thread 실행을 멈추기 때문에 인터럽트 핸들러 내에서 호출되어서는 안된다.
 
 ## Design Description
 ### Alarm Clock
+Pintos에서 구현된 alarm clock은 상술한 바와 같이 busy waiting으로 구현되어 우선순위 큐 기반 scheduling과 함께 구현되었을 시 불필요하게 시스템 자원을 낭비하는 문제가 있다. 따라서, alarm clock 구현을 busy waiting이 아닌, 타이머 인터럽트에 기반해 구현한다면 위의 문제를 해결할 수 있을 것이다.
 
+더 자세히 설명하자면, 먼저 thread에서 timer_sleep이 호출되었을 경우 현재 thread의 정보와 sleep의 시작 시간과 길이를 저장하고 현재 thread를 block시킨다. 이후, 매 틱마다 호출되는 타이머 인터럽트 핸들러에서 현재 sleep 중인 thread들을 확인하고, 이들 중 깨울 필요가 있는 thread들을 깨운다면 sleep 중인 thread들이 계속 ready 상태에 있을 필요가 없어 시스템 자원을 낭비하는 문제가 해결될 것이다.
+
+이를 위해서는 먼저 sleep의 시작 시간과 길이, thread의 정보를 묶어서 저장할 구조체가 필요하다. 또한, 이러한 '수면 중인' thread들의 목록을 저장할 자료구조를 만들고, 이를 타이머 인터럽트 핸들러가 매 틱마다 확인하고 시간이 지난 thread는 unblock시켜야 한다.
+
+이러한 구조는 alarm clock을 위한 thread를 새로 만드는 방식에 비해 여러 장점이 있다. 첫째로, alarm clock을 위한 thread를 새로 만드는 방식은 그 alarm clock thread 자체가 계속 ready 상태와 running 상태를 오가며 실행되어야 한다는 단점이 있다. 또한, alarm clock thread는 틱마다 정확히 실행되는 것이 불가능해 해당 thread를 깨워야 할 때 정확히 깨우는 것이 어렵다는 단점이 있다. 이에 반해 인터럽트 핸들러를 이용하는 방식은 시스템 자원 소모가 적고(컴퓨터의 입장에서는 1초에 100번은 굉장히 적은 빈도라는 점을 기억하자), 인터럽트가 잠시 비활성화되거나 다른 인터럽트 핸들러의 실행이 오래 걸리는 경우를 제외하고는 매 틱마다 alarm clock을 확인해 정확히 thread를 깨울 수 있다는 장점이 있다.
 
 ### Priority Scheduler & Priority Donation
-
+TODO
 
 ### Advanced Scheduler
+Project 1의 마지막 과제로, Pintos 문서에서는 multilevel feedback priority queue scheduling (MLFQS)의 구현에 대해 설명한다. MLFQS는 우선순위별로 나누어진 여러 큐를 이용한 scheduling 방식으로, thread의 실행에 따른 feedback을 도입해 한 thread가 긴 시간동안 실행되지 못했다면 해당 thread의 우선순위를 올리고, 최근에 CPU를 점유한 thread는 우선순위를 낮추는 식으로 동작한다.
+
+MLFQS에서는 thread가 직접 자신의 우선순위를 설정하지 못한다. Thread를 생성할 때에도 thread_create에 전달된 priority 값은 무시된다. 하지만 nice를 통해서 간접적으로 한 thread의 우선순위를 조절할 수 있다.
+
+nice 값은 한 thread가 얼마나 다른 thread에게 '친절한지'를 나타낸다. 이때 thread가 친절하다는 말은, 다른 thread에게 CPU 점유 권한을 넘겨주는 빈도가 높다는 뜻이다. 따라서, nice 값이 높을수록 thread는 우선순위가 낮아지게 되며, nice 값이 낮을수록 thread의 우선순위는 높아지게 된다. nice 값은 -20에서 20 사이의 정수이다.
+
+recent_cpu 값은 한 thread가 최근에 얼마나 많이 CPU를 점유했는지를 나타내는 지표이다. recent_cpu 값은 해당 thread가 running 상태에 있을 때 한 틱에 1씩 증가한다. running 상태에 있지 않은 thread에 대해서도 recent_cpu는 변화할 수 있다. running 상태에 있지 않은 thread는 recent_cpu 값이 특정 비율로 1초에 1번씩 낮아진다. 이 비율은 현재 CPU를 얻기 위해 경쟁하는 thread 개수가 많아질수록 1에 가까워진다. recent_cpu는 또한 niceness에도 영향받는다. 한 thread가 더욱 친절할수록, recent_cpu 값은 높아진다. recent_cpu는 최근 CPU 점유를 나타내는 지표이므로, 높은 recent_cpu는 낮은 우선순위로 이어지는것이 자연스러울것이다.
+
+마지막으로 load_avg는 현재 CPU를 점유하고자 경쟁하는 thread의 수와 비슷한 값을 가지는 지표이다. load_avg는 recent_cpu를 1초마다 계산할 때 recent_cpu값이 낮아지는 비율에 영향을 준다. 즉, load_avg가 높을수록 recent_cpu가 낮아지는 속도는 더 느려지고, load_avg가 낮을수록 recent_cpu가 낮아지는 속도는 더 빠르다.
+
+MLFQS는 이렇게 계산된 우선순위마다 큐 하나씩을 두고, thread들이 자신의 우선순위에 따라 다른 큐에 들어가도록 한다. 이때, 만약 한 큐에 여러 thread가 있다면, 이들 thread 중에서는 Round-Robin 방식으로 다음에 실행될 thread를 결정한다.
+
+MLFQS를 구현하기 위해서는 일단 위의 지표들을 계산하는 함수가 필요할 것이다. 또한, 위의 지표들은 1초, 혹은 4틱에 한번씩 재계산되어야 하므로 타이머 인터럽트 핸들러에서 지표를 업데이트하는 함수를 호출하는것이 알맞을 것이다.
+
+또한, 여러 큐를 선언하고 이들 큐에서 가장 우선순위가 높고 큐에서 가장 오래 기다린 thread를 찾아야 할 것이다. 마지막으로, 지표가 업데이트되면서 우선순위도 재계산될텐데, 이러한 재계산된 우선순위에 따라 각 큐에 thread를 재배치해야 할 것이다.
