@@ -728,7 +728,9 @@ timer_init (void)
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 ```
-타이머를 초기화시키는 함수로, pit_configure_channel과 intr_register_ext 두 함수를 호출한다. pit_configure_channel 함수 호출은 내부 진동자로 타이머 신호를 발생시키는 PIT(Programmable Interval Timer)의 0번 채널을 2번 모드와 TIMER_FREQ로 설정한다. x86 아키텍처에서 PIT의 0번 채널은 PIC(Programmable Interrupt Controller)의 interrupt line 0에 연결되어 있다. PIC는 이를 다시 interrupt number로 변환하여 CPU에 전달하고, CPU는 메모리의 IDT(Interrupt Descripter Table)을 참조하여 인터럽트 발생 시마다 타이머 인터럽트 핸들러를 호출한다.
+타이머를 초기화시키는 함수로, pit_configure_channel과 intr_register_ext 두 함수를 호출한다. pit_configure_channel 함수 호출은 내부 진동자로 타이머 신호를 발생시키는 PIT(Programmable Interval Timer)의 0번 채널을 2번 모드와 TIMER_FREQ로 설정한다. IA32 아키텍처에서 PIT의 0번 채널은 PIC(Programmable Interrupt Controller)의 interrupt line 0에 연결되어 있다. PIC는 이를 다시 interrupt number로 변환하여 CPU에 전달하고, CPU는 메모리의 IDT(Interrupt Descripter Table)을 참조하여 인터럽트 발생 시마다 타이머 인터럽트 핸들러를 호출한다. 
+
+PIT의 2번 모드는 주기적인 펄스를 발생시키는 모드로, 2번 모드로 설정된 채널은 1을 출력하다가 한 주기(여기에서는 1s / TIMER_FREQ)가 끝나는 시점에 0으로 떨어지는 패턴의 모드이다. 이는 주기적인 신호를 발생시켜 타이머 인터럽트를 위한 tick을 구현하는데 쓰인다. 다른 모드로는 방형파(square wave)를 발생시키는 3번 모드 등이 있으며, PC 스피커를 제어하는데 쓰인다. 
 
 intr_register_ext는 위에서 설명한 인터럽트 핸들러를 등록하는 함수이다. Interrupt number 0x20에 할당된 인터럽트의 인터럽트 핸들러를 timer_interrupt로 등록하여, 해당 인터럽트가 발생할 때마다 timer_interrupt가 호출되도록 한다.
 
@@ -762,7 +764,7 @@ timer_calibrate (void)
 ```
 실제 시간과 유사한 딜레이를 구현하기 위해, loops_per_tick을 초기화하는 함수이다. PIT에서 발생하는 인터럽트 신호는 1초에 TIMER_FREQ회, 즉 100Hz로 설정되어 있기 때문에 밀리세컨드 이하의 시간을 timer_ticks만으로 측정하기는 어렵다. 따라서, Pintos에서는 밀리세컨드 이하의 시간 단위를 위한 sleep을 위해서 먼저 1초에 아무것도 하지 않는 loop가 몇번 실행되는지 확인한다. 이후 sleep을 할 때는, 해당 측정에서와 같은 loop를 실행하도록 해 정밀한 sleep이 가능하게 한다. 이때 1초에 loop가 몇 번 실행되는지를 나타내는 변수가 loops_per_tick이며, 이를 초기화하는 함수가 timer_calibrate이다.
 
-동작을 자세히 살펴보면, 먼저 loops_per_tick을 2^10으로 초기화한 후 이에 2씩 곱하며 too_many_loops가 실패하는 loops_per_tick 값을 찾는다. 이렇게 찾은 loops_per_tick은 아직 정확하지 않으므로, 1로 설정된 비트 아래 8개 비트도 하나씩 1로 설정하며 too_many_loops 함수를 실행시키고, 만약 함수 실행이 실패했다면 해당 비트도 1로 업데이트한다. 이렇게 만들어진 bit pattern이 loops_per_tick이 된다.
+동작을 자세히 살펴보면, 먼저 loops_per_tick을 2^10으로 초기화한 후 이에 2씩 곱하며 too_many_loops가 성공하는 loops_per_tick 값을 찾는다. 이렇게 찾은 loops_per_tick은 아직 정확하지 않으므로, 1로 설정된 비트 아래 8개 비트도 하나씩 1로 설정하며 too_many_loops 함수를 실행시키고, 만약 함수 실행이 실패했다면 해당 비트도 1로 업데이트한다. 이렇게 만들어진 bit pattern이 loops_per_tick이 된다.
 
 __timer_ticks__
 ```C
@@ -805,7 +807,7 @@ Pintos의 현재 구현은 Round-Robin 방식을 사용하고 있어 thread_yiel
 
 때문에 이번 과제에서는 Priority Queue 기반 scheduling을 구현하기에 앞서, 주어진 timer_sleep 구현을 busy waiting이 아닌 thread_block 기반으로 변경하여, sleep하는 thread가 불필요하게 다른 thread들의 실행을 막지 않도록 하는 것을 첫 번째 목표로 한다.
 
-__timer_msleep__, __timer_usleep_, __timer__nsleep__
+__timer_msleep__, __timer_usleep__, __timer__nsleep__
 ```C
 void
 timer_msleep (int64_t ms) 
@@ -829,6 +831,7 @@ timer_nsleep (int64_t ns)
 ```
 실제 시간에 기반하여 현재 thread가 밀리세컨드, 마이크로세컨드, 나노세컨드 단위로 sleep하도록 하는 함수이다.
 
+__timer_mdelay__, __timer_udelay__, __timer_ndelay__
 ```C
 void
 timer_mdelay (int64_t ms) 
@@ -896,7 +899,7 @@ too_many_loops (unsigned loops)
 ```
 loops_per_tick값을 조율하기 위해 쓰이는 함수이다. 인자 loops만큼의 loop를 실행하여, 만약 해당 실행 이후에 ticks 값이 변하였다면 true를, ticks 값이 변하였다면 false를 반환한다. 달리 설명하자면, 인자로 넘어온 loop 횟수가 너무 많아 한 tick 내에 실행 불가능할 경우 true를, 아닌 경우 false를 반환하는 함수이다.
 
-too_many_loops의 구현에서, barrior 매크로가 쓰인 것을 볼 수 있다. barrior는 컴파일러에 의한 순서 재배치(reordering), 코드 변경 혹은 삭제를 막는 코드이다. 첫 번째 while문을 보면, while의 조건을 검사하기 전에 start가 ticks로 초기화되기 때문에 컴파일러는 이를 infinite loop로 변경하려 한다. 하지만, 실제로는 while block이 실행되는 도중 타이머 인터럽트가 발생하여 ticks의 값이 변경될 수 있기 때문에 컴파일러가 이러한 최적화를 한다면 이는 틀린 코드가 된다. 따라서, 명시적으로 컴파일러가 코드를 변경하지 못하도록 barrior를 삽입하여 불필요하고 부정확한 최적화를 막는다.
+too_many_loops의 구현에서, barrior 매크로가 쓰인 것을 볼 수 있다. barrior는 컴파일러에 의한 순서 재배치(reordering), 코드 변경 혹은 삭제를 막는 코드이다. 첫 번째 while문을 보면, while의 조건을 검사하기 전에 start가 ticks로 초기화되고 loop 내에서 start의 값이 변경되지 않기 때문에 컴파일러는 이를 infinite loop로 변경하려 한다. 하지만, 실제로는 while block이 실행되는 도중 타이머 인터럽트가 발생하여 ticks의 값이 변경될 수 있기 때문에 컴파일러가 이러한 최적화를 한다면 이는 틀린 코드가 된다. 따라서, 명시적으로 컴파일러가 코드를 변경하지 못하도록 barrior를 삽입하여 불필요하고 부정확한 최적화를 막는다.
 
 __busy_wait__
 ```C
@@ -952,6 +955,371 @@ real_time_delay (int64_t num, int32_t denom)
 }
 ```
 인자 num을 denom으로 나눈 초 단위의 시간만큼 현재 thread의 실행을 지연시키는 함수이다. timer_mdelay, timer_udelay, timer_ndelay의 구현을 위해 쓰인다. 상술한 바와 같이 busy waiting을 하기 때문에 비효율적이며, 특별한 경우가 아닌 이상 real_time_sleep과 이를 이용하는 timer_msleep, timer_usleep, timer_nsleep을 사용하는 것이 더 효율적이다.
+
+### Interrupt - interrupt.h / interrupt.c
+인터럽트를 처리하는 Pintos 소스 코드에 대해 분석하기 전에, IA32 아키텍처의 인터럽트 핸들링 과정과 Pintos의 인터럽트 핸들링 과정에 대해 먼저 알아보자. IA32 아키텍처에서는 IDT(Interrupt Descriptor Table)이라는 자료구조를 통해 인터럽트 핸들러를 관리한다. 또한, IA32 아키텍처에서는 IDT를 가리키는 포인터를 IDTR(Interrupt Descriptor Table Register)에 저장해두고, 인터럽트 발생 시 IDTR이 가리키는 IDT를 통해 ISR(Interrupt Service Routine)을 호출한다.
+
+Pintos에서는 IDT에 인터럽트 핸들러를 바로 등록해 인터럽트 발생 시 핸들러를 바로 호출하는 것이 아닌, intr##_stub (##은 00~FF의 16진수)으로 이름붙여진 어셈블리 루틴을 먼저 호출한다. intr##_stub은 각 인터럽트 벡터 번호마다 존재하는 어셈블리 루틴으로, CPU의 general-purpose 레지스터와 세그멘트 레지스터, 그리고 인터럽트 벡터 번호를 먼저 스택에 push하고, intr_handler 함수를 호출한다. 이때 이렇게 push된 정보들은 intr_frame이라는 구조체로 묶이고, 이 구조체에 대한 포인터가 intr_handler의 인자로 주어진다. intr_handler에서는 최종적으로 인자로 넘어온 인터럽트 벡터 번호(vec_no)를 이용해 해당 인터럽트가 내부 인터럽트인지, 혹은 외부 인터럽트인지를 판별하고 intr_handlers 배열(intr_handler 함수 자체나 IDT와는 다른 자료구조이다)에 저장된 핸들러 함수를 호출한다.
+
+즉, Pintos에서 인터럽트 처리 과정을 요약하자면 'CPU의 IDTR을 참조해 IDT에 저장된 ISR 호출 -> ISR로 등록된 intr##_stub 호출 -> 인터럽트 발생시 실행되고 있던 thread의 실행 context와 인터럽트 벡터 번호 등을 스택에 push 후 intr_handler 호출 -> 인터럽트 벡터 번호를 통해 내부 인터럽트인지, 외부 인터럽트인지를 판별하고 intr_handlers 배열에 저장된 실제 인터럽트 핸들러 함수 호출'로 요약할 수 있다.
+
+Pintos에서 이러한 구조를 채택한 이유로는 첫째로 인터럽트 발생 시 현재 thread의 실행 context를 저장하는 과정은 모든 인터럽트가 같기 때문에 이 과정을 하나의 어셈블리 루틴으로 묶어 코드를 재사용하고, 둘째로 외부 인터럽트에 대한 인터럽트 핸들러를 이후에 변경할 수 있게 함으로써 더 유연한 인터럽트 핸들링을 가능하게 하기 위한 것으로 생각할 수 있다.
+
+실제 인터럽트 핸들러 함수의 실행이 끝난 이후에는 스택에 저장되었던 general-purpose 레지스터와 세그먼트 레지스터, 인터럽트 벡터 번호 등을 되돌리거나 스택 포인터를 내려 삭제하고 원래 실행 흐름으로 되돌아가는 과정이 필요하다. 이 과정은 intr_stub.S의 intr_exit 루틴이 담당한다. 더 자세한 내용은 아래 intr_handler 함수를 설명하며 같이 다룬다.
+
+```C
+struct intr_frame
+  {
+    uint32_t edi;               
+    uint32_t esi;               
+    uint32_t ebp;               
+    uint32_t esp_dummy;         
+    uint32_t ebx;               
+    uint32_t edx;               
+    uint32_t ecx;               
+    uint32_t eax;               
+    uint16_t gs, :16;           
+    uint16_t fs, :16;           
+    uint16_t es, :16;           
+    uint16_t ds, :16;           
+
+    uint32_t vec_no;            
+
+    uint32_t error_code;        
+
+    void *frame_pointer;        
+
+    void (*eip) (void);
+    uint16_t cs, :16;           
+    uint32_t eflags;            
+    void *esp;                  
+    uint16_t ss, :16;           
+  };
+```
+상술한 인터럽트 발생시 실행되고 있던 thread의 레지스터와 인터럽트 벡터 번호 등을 묶어서 참조하기 위한 구조체이다. edi에서 eax까지의 멤버는 인터럽트 발생 시 실행되고 있던 thread의 general-purpose 레지스터, gs, fs, es, ds는 세그먼트 레지스터를 나타내며, vec_no는 인터럽트 벡터 번호를 나타낸다. error_code는 CPU 혹은 intr##_stub에 의해 push되는 error code이며, 몇몇 인터럽트에 한해 CPU가 자동으로 push하며 다른 종류의 인터럽트에 대해서는 intr##_stub이 0으로 push한다.
+
+__intr_get_level__
+```C
+enum intr_level
+intr_get_level (void) 
+{
+  uint32_t flags;
+
+  /* Push the flags register on the processor stack, then pop the
+     value off the stack into `flags'.  See [IA32-v2b] "PUSHF"
+     and "POP" and [IA32-v3a] 5.8.1 "Masking Maskable Hardware
+     Interrupts". */
+  asm volatile ("pushfl; popl %0" : "=g" (flags));
+
+  return flags & FLAG_IF ? INTR_ON : INTR_OFF;
+}
+```
+현재 인터럽트 레벨을 반환하는 함수이다. CPU의 플래그를 pushfl과 popl 명령어로 flags에 저장한 후, 이를 FLAG_IF로 마스킹한 결과에 따라 INTR_ON, INTR_OFF 중 하나를 반환한다.
+
+```C
+enum intr_level
+intr_set_level (enum intr_level level) 
+{
+  return level == INTR_ON ? intr_enable () : intr_disable ();
+}
+```
+인터럽트 레벨을 인자 level로 설정하는 함수이다. 
+
+```C
+enum intr_level
+intr_enable (void) 
+{
+  enum intr_level old_level = intr_get_level ();
+  ASSERT (!intr_context ());
+
+  /* Enable interrupts by setting the interrupt flag.
+
+     See [IA32-v2b] "STI" and [IA32-v3a] 5.8.1 "Masking Maskable
+     Hardware Interrupts". */
+  asm volatile ("sti");
+
+  return old_level;
+}
+```
+인터럽트를 활성화하는 함수이다. 인터럽트 활성화 이후 활성화 이전 인터럽트 레벨을 반환한다. sti 명령어는 인터럽트 플래그를 1로 설정하는 명령어이다.
+
+__intr_disable__
+```C
+enum intr_level
+intr_disable (void) 
+{
+  enum intr_level old_level = intr_get_level ();
+
+  asm volatile ("cli" : : : "memory");
+
+  return old_level;
+}
+```
+인터럽트를 비활성화 하는 함수이다. 인터럽트 비활성화 이후 비활성화 이전 인터럽트 레벨을 반환한다. cli 명령어는 인터럽트 플래그를 0으로 clear하는 명령어이다.
+
+__intr_init__
+```C
+void
+intr_init (void)
+{
+  uint64_t idtr_operand;
+  int i;
+
+  pic_init ();
+
+  for (i = 0; i < INTR_CNT; i++)
+    idt[i] = make_intr_gate (intr_stubs[i], 0);
+
+  idtr_operand = make_idtr_operand (sizeof idt - 1, idt);
+  asm volatile ("lidt %0" : : "m" (idtr_operand));
+
+  for (i = 0; i < INTR_CNT; i++)
+    intr_names[i] = "unknown";
+  intr_names[0] = "#DE Divide Error";
+  /* Omitted */
+  intr_names[19] = "#XF SIMD Floating-Point Exception";
+}
+```
+Pintos의 인터럽트 시스템을 초기화하기 위한 함수이다. 이 함수가 하는 일은 크게 세 가지로 나눌 수 있다. 첫번째로, PIC를 pic_init을 호출하여 초기화한다. 두번째로, make_intr_gate 함수를 모든 인터럽트 벡터 번호에 대해 호출하여 IDT의 각 원소에 intr##_stub 루틴의 주소를 저장한다. (make_intr_gate의 동작에 대해서는 후술한다.) 세 번째로, IDTR에 저장될 IDT 주소를 make_idtr_operand 함수를 통해 만들고, 이를 lidt 명령어로 IDTR에 저장한다. 
+
+intr_init에서 IDT의 각 원소를 intr##_stub 루틴으로 초기화해주고 IDTR에 IDT의 주소를 저장하었기 때문에, 이후 인터럽트 발생 시 CPU의 실행 흐름이 자동으로 intr##_stub 루틴으로 넘어가게 된다.
+
+__register_handler__
+```C
+static void
+register_handler (uint8_t vec_no, int dpl, enum intr_level level,
+                  intr_handler_func *handler, const char *name)
+{
+  ASSERT (intr_handlers[vec_no] == NULL);
+  if (level == INTR_ON)
+    idt[vec_no] = make_trap_gate (intr_stubs[vec_no], dpl);
+  else
+    idt[vec_no] = make_intr_gate (intr_stubs[vec_no], dpl);
+  intr_handlers[vec_no] = handler;
+  intr_names[vec_no] = name;
+}
+```
+인자 vec_no에 함수 handler를 인터럽트 핸들러로 등록하는 함수이다. 이때 만약 인터럽트를 활성화한 상태에서 실행되어야 할 인터럽트 핸들러라면, 즉, 인자 level이 INTR_ON이라면 make_trap_gate 함수를 호출하고, 인터럽트를 비활성화한 상태에서 실행되어야 할 인터럽트 핸들러라면 make_intr_gate 함수를 호출한다. 두 함수의 차이점에 대해서는 후술한다.
+
+__intr_register_ext__, __intr_register_int__
+```C
+void
+intr_register_ext (uint8_t vec_no, intr_handler_func *handler,
+                   const char *name) 
+{
+  ASSERT (vec_no >= 0x20 && vec_no <= 0x2f);
+  register_handler (vec_no, 0, INTR_OFF, handler, name);
+}
+```
+```C
+void
+intr_register_int (uint8_t vec_no, int dpl, enum intr_level level,
+                   intr_handler_func *handler, const char *name)
+{
+  ASSERT (vec_no < 0x20 || vec_no > 0x2f);
+  register_handler (vec_no, dpl, level, handler, name);
+}
+```
+위의 register_handler의 wrapper로써, vec_no가 실제로 외부, 혹은 내부 인터럽트인지 확인하고 외부 인터럽트의 경우 인터럽트를 비활성화한 상태에서 실행되는 인터럽트를 등록하고, 내부 인터럽트의 경우 인터럽트 활성화 여부를 호출자에게 맡긴다.
+
+__intr_context__
+```C
+bool
+intr_context (void) 
+{
+  return in_external_intr;
+}
+```
+현재 외부 인터럽트 핸들러를 실행중인지를 반환한다.
+
+__intr_yield_on_return__
+```C
+void
+intr_yield_on_return (void) 
+{
+  ASSERT (intr_context ());
+  yield_on_return = true;
+}
+```
+인터럽트 핸들러 내에서 호출되어, 해당 핸들러가 종료될 시 인터럽트가 발생한 thread를 yield시키는 함수이다. 외부 인터럽트 핸들러 내에서만 호출될 수 있으며, 만약 인터럽트 핸들러 내에서 이 함수가 호출되었을 경우 intr_handler 함수에서 인터럽트 핸들러 종료 후 thread_yield를 호출하여 현재 thread를 yield시킨다.
+
+__pic_init__
+```C
+static void
+pic_init (void)
+{
+  outb (PIC0_DATA, 0xff);
+  outb (PIC1_DATA, 0xff);
+
+  outb (PIC0_CTRL, 0x11); 
+  outb (PIC0_DATA, 0x20); 
+  outb (PIC0_DATA, 0x04); 
+  outb (PIC0_DATA, 0x01); 
+
+  outb (PIC1_CTRL, 0x11); 
+  outb (PIC1_DATA, 0x28); 
+  outb (PIC1_DATA, 0x02); 
+  outb (PIC1_DATA, 0x01); 
+
+  outb (PIC0_DATA, 0x00);
+  outb (PIC1_DATA, 0x00);
+}
+```
+PIC를 초기화하는 함수이다. outb는 어셈블리 명령어 outb의 wrapper로서, 인자 port에 인자 data를 쓰는 기능을 한다.
+
+__pic_end_of_interrupt__
+```C
+static void
+pic_end_of_interrupt (int irq) 
+{
+  ASSERT (irq >= 0x20 && irq < 0x30);
+
+  /* Acknowledge master PIC. */
+  outb (0x20, 0x20);
+
+  /* Acknowledge slave PIC if this is a slave interrupt. */
+  if (irq >= 0x28)
+    outb (0xa0, 0x20);
+}
+```
+인터럽트 처리 이후 PIC에 인터럽트 처리가 끝났음을 알리고, 다음 외부 인터럽트 신호를 받을 수 있도록 하는 함수이다.
+
+__make_gate__
+```C
+static uint64_t
+make_gate (void (*function) (void), int dpl, int type)
+{
+  uint32_t e0, e1;
+
+  ASSERT (function != NULL);
+  ASSERT (dpl >= 0 && dpl <= 3);
+  ASSERT (type >= 0 && type <= 15);
+
+  e0 = (((uint32_t) function & 0xffff)     
+        | (SEL_KCSEG << 16));              
+
+  e1 = (((uint32_t) function & 0xffff0000) 
+        | (1 << 15)                        
+        | ((uint32_t) dpl << 13)           
+        | (0 << 12)                        
+        | ((uint32_t) type << 8));         
+
+  return e0 | ((uint64_t) e1 << 32);
+}
+```
+Gate란 IDT의 각 entry마다 저장되는, 인터럽트 핸들러 호출을 위한 정보가 저장되어있는 bit pattern 형태의 자료구조이다. 즉, make_gate의 반환값이 IDT의 entry가 되고, CPU는 인터럽트 발생 시 이 저장된 값을 보고 ISR을 찾아간다. 
+
+IA32 아키텍처 specification에 의해 정의된 Gate의 bit pattern은 다음과 같다. 표의 첫 행은 비트 범위, 두 번째 행은 해당 비트 범위에 저장되는 정보이다.
+|63~48|47|46~45|44|43~40|39~32|31~16|15~0|
+|:-----------:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+|Offset[31:16]|P|DPL|0|Gate type|Reserved|Segment Selector|Offset[15:0]|
+
+여기서 Offset은 호출되는 인터럽트 핸들러 함수의 주소, 즉 함수 포인터이며, Gate type은 32비트 아키텍처에서는 0xE가 인터럽트 타입을 나타내고 0xF가 트랩을 나타낸다. make_gate에서 수행하는 연산을 보면 bit shift 연산을 이용해 각 field에 해당되는 값을 쓰고 있음을 볼 수 있다.
+
+따라서, make_gate는 인자로 전달된 함수 포인터와 DPL(CPU privilege level을 나타내는 2비트 값), 인터럽트 타입을 위에 나타내어진 형식에 따른 bit pattern으로 바꾸고 이를 반환하는 역할을 한다.
+
+__make_intr_gate__, __make_trap_gate__
+```C
+static uint64_t
+make_intr_gate (void (*function) (void), int dpl)
+{
+  return make_gate (function, dpl, 14);
+}
+```
+```C
+static uint64_t
+make_trap_gate (void (*function) (void), int dpl)
+{
+  return make_gate (function, dpl, 15);
+}
+```
+make_gate를 이용하여 인터럽트에 대한 gate의 트랩에 대한 gate를 만드는 함수이다. 두 함수를 보면 모두 make_gate를 호출하여 그 반환값을 반환하는 것을 볼 수 있으며, 차이점은 make_intr_gate의 세 번째 인자로 전달되는 gate type이다. 
+
+__make_idtr_operand__
+```C
+static inline uint64_t
+make_idtr_operand (uint16_t limit, void *base)
+{
+  return limit | ((uint64_t) (uint32_t) base << 16);
+}
+```
+IA32 아키텍처에서 IDTR은 다음과 같은 형식을 가진다.
+|48~16|15~0|
+|:---:|:---:|
+|Offset|Size|
+
+이때 Offset은 IDT의 주소, Size는 IDT의 byte 단위 크기에 1을 뺀 값이다. make_idtr_operand는 IDT의 주소를 base 인자로 받고, byte 단위 크기에서 1을 뺀 값을 limit 인자로 받아 해당 형식에 맞게 이를 저장한 bit pattern을 반환한다.
+
+__intr_handler__
+```C
+void
+intr_handler (struct intr_frame *frame) 
+{
+  bool external;
+  intr_handler_func *handler;
+
+  external = frame->vec_no >= 0x20 && frame->vec_no < 0x30;
+  if (external) 
+    {
+      ASSERT (intr_get_level () == INTR_OFF);
+      ASSERT (!intr_context ());
+
+      in_external_intr = true;
+      yield_on_return = false;
+    }
+
+  handler = intr_handlers[frame->vec_no];
+  if (handler != NULL)
+    handler (frame);
+  else if (frame->vec_no == 0x27 || frame->vec_no == 0x2f)
+    {
+      /* There is no handler, but this interrupt can trigger
+         spuriously due to a hardware fault or hardware race
+         condition.  Ignore it. */
+    }
+  else
+    unexpected_interrupt (frame);
+
+  if (external) 
+    {
+      ASSERT (intr_get_level () == INTR_OFF);
+      ASSERT (intr_context ());
+
+      in_external_intr = false;
+      pic_end_of_interrupt (frame->vec_no); 
+
+      if (yield_on_return) 
+        thread_yield (); 
+    }
+}
+```
+어셈블리 루틴 intr##_stub에 의해 호출되는 함수로, 어셈블리 루틴에 의해 스택으로 push된 frame 포인터를 이용해 인터럽트 벡터 번호를 알아내고, 이 vec_no에 따라 인터럽트가 외부(external) 인터럽트인지 내부(internal) 인터럽트인지 알아낸다. 만약 외부 인터럽트라면 현재 외부 인터럽트를 처리중임을 나타내는 in_external_intr을 assert하고, 인터럽트 핸들러 종료시 thread yield 여부를 나타내는 yield_on_return은 deassert한다. 
+
+이후 인터럽트 핸들러의 주소를 저장한 intr_handlers에서 vec_no를 이용해 실제 인터럽트 핸들러를 호출한다. 만약 인터럽트 핸들러가 intr_handlers에 등록되지 않았다면 unexpected_interrupt 함수를 호출해 콘솔로 인터럽트 핸들러가 할당되지 않은 인터럽트가 발생했음을 알린다.
+
+인터럽트 핸들러의 호출이 끝났고, 현재 처리중인 인터럽트가 외부 인터럽트인 경우에는 in_external_intr를 다시 deassert하고, PIC에 인터럽트 처리가 끝났음을 알린다. 마지막으로 인터럽트 핸들러가 yield_on_return을 assert했을 경우 현재 thread를 yield 시키며 intr_handler의 실행은 끝난다.
+
+한 가지 주의해야 할 점은 intr_handler의 실행이 끝났다고 해서 Pintos의 인터럽트 핸들링 과정이 끝난 것은 아니라는 점이다. intr_handler가 끝난 후에는 intr-stub.S의 intr_exit 루틴이 실행되어, 스택에 저장되었던 general-purpose 레지스터와 세그먼트 레지스터를 되돌리고, vec_no, error_code, frame_pointer를 삭제하는 작업을 수행한다. 이 마지막 작업까지 끝난 후 intr_exit 루틴에서 iret 명령어를 수행하여 인터럽트 발생 전 원래 실행 흐름으로 되돌아가게 된다.
+
+__unexpeted_interrupt__
+```C
+static void
+unexpected_interrupt (const struct intr_frame *f)
+{
+  /* Count the number so far. */
+  unsigned int n = ++unexpected_cnt[f->vec_no];
+
+  /* If the number is a power of 2, print a message.  This rate
+     limiting means that we get information about an uncommon
+     unexpected interrupt the first time and fairly often after
+     that, but one that occurs many times will not overwhelm the
+     console. */
+  if ((n & (n - 1)) == 0)
+    printf ("Unexpected interrupt %#04x (%s)\n",
+    f->vec_no, intr_names[f->vec_no]);
+}
+```
+인터럽트가 발생했을 때, 해당 인터럽트 번호에 대한 인터럽트 핸들러가 intr_handlers 배열에 할당되어있지 않다면 호출되는 함수이다. 
 
 ## Design Description
 ### Alarm Clock
