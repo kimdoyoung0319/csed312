@@ -1306,20 +1306,90 @@ __unexpeted_interrupt__
 static void
 unexpected_interrupt (const struct intr_frame *f)
 {
-  /* Count the number so far. */
   unsigned int n = ++unexpected_cnt[f->vec_no];
 
-  /* If the number is a power of 2, print a message.  This rate
-     limiting means that we get information about an uncommon
-     unexpected interrupt the first time and fairly often after
-     that, but one that occurs many times will not overwhelm the
-     console. */
   if ((n & (n - 1)) == 0)
     printf ("Unexpected interrupt %#04x (%s)\n",
     f->vec_no, intr_names[f->vec_no]);
 }
 ```
 인터럽트가 발생했을 때, 해당 인터럽트 번호에 대한 인터럽트 핸들러가 intr_handlers 배열에 할당되어있지 않다면 호출되는 함수이다. 
+
+### Init - init.h / init.c / loader.S / start.S
+init 모듈은 Pintos의 초기화 과정과 실행 과정을 서술한 모듈이다. init 모듈에는 loader.S와 start.S 이후 실행되는 Pintos의 실행 시작지점인 main 함수와 더불어 bss_init, paging_init 등 여러 운영체제를 초기화하기 위한 함수들, 그리고 커널 실행 이후 명령행 인수로 넘어온 여러 동작들을 실행하기 위한 parse_options, run_actions 등의 함수가 있으나, 이번 design report에서는 각 함수의 동작을 자세히 설명하기보다는 Pintos의 개괄적인 부트 프로세스와 main이 실행된 이후 초기화 과정에 대해 설명한다.
+
+__loader.S__
+
+가상머신에서 Pintos가 시작되면 BIOS에 의해 처음 실행되는 어셈블리 루틴이다. loader.S의 코드는 MBR(Master Boot Record) 첫 번째 디스크의 첫 번째 섹터에 적재되어 BIOS에 의해 시작된다. loader의 역할은 하드 디스크 내의 커널 이미지를 찾아 그 이미지로 실행 흐름을 넘기는 것이다. 이를 위해 loader는 각 하드디스크의 파티션 테이블을 읽으며 해당 하드디스크가 partition되어 있는지, 해당 파티션이 Pintos 커널 파티션인지, 해당 파티션에서 부트가 가능한지 등을 확인하고 커널을 찾았다면 load_kernel 서브루틴을 실행해 커널 이미지를 메모리에 로드한다.
+
+커널 이미지가 메모리에 로드된 후에는 커널의 ELF 헤더에 정의된 entry point를 참조하여 해당 entry point로 점프하여 start 루틴을 실행한다.
+
+__start.S__
+
+loader에 의해 실행되어 커널을 low-level에서 초기화하고 main 함수를 호출하는 루틴이다. 이 루틴은 먼저 AH 레지스터를 0x88로 설정하고 0x15 인터럽트를 발생시켜 현재 메모리 용량을 알아낸다.
+
+이후 deassert 되어 있는 20번째 주소 라인을 활성화시켜주고, 기본적인 페이지 테이블을 준비한 후 실행 모드를 real mode에서 protected mode로 전환한다. 이후 main 함수로 실행 흐름을 넘기며 start 루틴은 종료된다.
+
+__main__
+```C
+int
+main (void)
+{
+  char **argv;
+
+  /* Clear BSS. */  
+  bss_init ();
+
+  /* Break command line into arguments and parse options. */
+  argv = read_command_line ();
+  argv = parse_options (argv);
+
+  /* Initialize ourselves as a thread so we can use locks,
+     then enable console locking. */
+  thread_init ();
+  console_init ();  
+
+  /* Greet user. */
+  printf ("Pintos booting with %'"PRIu32" kB RAM...\n",
+          init_ram_pages * PGSIZE / 1024);
+
+  /* Initialize memory system. */
+  palloc_init (user_page_limit);
+  malloc_init ();
+  paging_init ();
+
+  /* Initialize interrupt handlers. */
+  intr_init ();
+  timer_init ();
+  kbd_init ();
+  input_init ();
+
+  /* Start thread scheduler and enable interrupts. */
+  thread_start ();
+  serial_init_queue ();
+  timer_calibrate ();
+
+  printf ("Boot complete.\n");
+  
+  /* Run actions specified on kernel command line. */
+  run_actions (argv);
+
+  /* Finish up. */
+  shutdown ();
+  thread_exit ();
+}
+```
+Low level 커널 초기화 과정이 끝나고 high level에서 kernel을 초기화한 후, Pintos 실행시 명령행 인수로 넘어왔던 action을 실행하는, Pintos의 메인 함수이다.
+
+main에서는 먼저 bss_init을 호출하여 BSS 세그먼트를 초기화한다. BSS 세그먼트는 초기화되지 않은 전역 변수들이 저장되는 영역으로, 이들은 0으로 초기화되므로 해당 영역을 0으로 덮어씌워 초기화한다. 
+
+이후 main은 read_command_line 함수와 parse_options 함수를 호출하여 커널 명령행 인수를 읽어들이고 이를 파싱해 부트 프로세스 이후 해당 action을 실행할 수 있도록 한다. 해당 명령행 인수는 Pintos 실행시 pintos 유틸리티에 의해 삽입되어 커널에 전달된다.
+
+다음으로, main은 thread_init과 console_init을 실행하여 쓰레드 시스템을 초기화하고 main thread를 생성하며, 콘솔을 초기화한다. 이후에는 palloc_init, malloc_init, paging_init을 호출하여 메모리 시스템을 초기화한다.
+
+이후 main은 intr_init, timer_init, kbd_init, input_init을 호출하여 인터럽트 핸들러들과 인터럽트 시스템을 초기화한다. 마지막으로 main은 thread_start와 serial_init_queue, timer_calibrate를 호출하여 thread scheduler를 초기화하고 idle thread를 생성하며, sub-tick timer를 조율하고, 인터럽트를 활성화환다.
+
+부트 프로세스 이후에는 run_actions 함수를 호출하여 이전에 파싱된 명령행 인수에 명시된 action을 수행한다.
 
 ## Design Description
 ### Alarm Clock
