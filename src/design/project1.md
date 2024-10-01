@@ -967,6 +967,10 @@ Pintos에서 이러한 구조를 채택한 이유로는 첫째로 인터럽트 �
 
 실제 인터럽트 핸들러 함수의 실행이 끝난 이후에는 스택에 저장되었던 general-purpose 레지스터와 세그먼트 레지스터, 인터럽트 벡터 번호 등을 되돌리거나 스택 포인터를 내려 삭제하고 원래 실행 흐름으로 되돌아가는 과정이 필요하다. 이 과정은 intr_stub.S의 intr_exit 루틴이 담당한다. 더 자세한 내용은 아래 intr_handler 함수를 설명하며 같이 다룬다.
 
+한 가지 중요한 점은 인터럽트 핸들러 내에서는 절대로 thread_block 등을 호출해서 현재 함수를 sleep시켜서는 안된다는 점이다. 이는 인터럽트 핸들러 수행 중에는 다른 인터럽트를 처리할 수 없기 때문이다. 만약 인터럽트 핸들러 내에서 현재 thread를 block하고 다른 thread로 실행 흐름을 전환한다면, (thread_block에서 schedule을 호출하므로 block 이후 다른 thread에 실행 흐름을 넘기는 것은 가능하다.) 아직 인터럽트 핸들러가 끝나지 않았으므로 다른 인터럽트 발생 시 이를 CPU가 받아들이는 것이 불가능해진다. 따라서, 타이머 인터럽트에 기반해 다른 thread들을 reschedule하는 것이 불가능해지고 이는 OS의 scheduling 시스템을 망가트린다. Pintos에서는 thread_block에서 ASSERT를 통해 인터럽트 핸들러 실행 중이 아님을 확인함으로써 이러한 상황을 막는다.
+
+또한, 이는 직접 thread_block, timer_sleep 등을 호출해 현재 함수의 실행을 중지하는 것 뿐만 아니라, synchronization primitive를 이용해 특정 공유 자원에 접근하려 하거나 malloc을 통해 메모리를 할당받으려 하는 것에도 적용된다. Semaphore 등의 synchronization primitive는 해당 primitive를 얻지 못했을 경우 thread_block을 호출하여 함수 실행을 중지시키고, malloc은 이러한 synchronization primitive를 이용하기 때문이다.
+
 ```C
 struct intr_frame
   {
@@ -1390,6 +1394,190 @@ main에서는 먼저 bss_init을 호출하여 BSS 세그먼트를 초기화한�
 이후 main은 intr_init, timer_init, kbd_init, input_init을 호출하여 인터럽트 핸들러들과 인터럽트 시스템을 초기화한다. 마지막으로 main은 thread_start와 serial_init_queue, timer_calibrate를 호출하여 thread scheduler를 초기화하고 idle thread를 생성하며, sub-tick timer를 조율하고, 인터럽트를 활성화환다.
 
 부트 프로세스 이후에는 run_actions 함수를 호출하여 이전에 파싱된 명령행 인수에 명시된 action을 수행한다.
+
+### Malloc - malloc.c / malloc.h
+malloc 모듈은 메모리 block 할당을 구현하는 모듈로, malloc과 calloc, realloc 등 여러 힙 메모리 할당에 관한 함수들이 정의되어 있다. 하지만, malloc을 제외한 나머지 함수들의 구현은 이 과제와 큰 관련이 있는 내용이 아니며, 내부적으로 malloc을 호출하는 식으로 동작하여 malloc의 동작에 대해서만 이해하면 충분하므로 본 보고서에서는 malloc_init, malloc, free 세 함수의 동작에 대해서만 중점적으로 살펴본다.
+
+```C
+struct desc
+  {
+    size_t block_size;          
+    size_t blocks_per_arena;    
+    struct list free_list;      
+    struct lock lock;           
+  };
+```
+desc 구조체는 한 단위의 block을 나타내기 위한 구조체이다. Pintos의 메모리 allocation은 크게 두 가지 종류로 이루어진다. 한 종류는 페이지 크기의 1/4 이하 크기의 block들에 대한 allocation이며, 다른 하나는 그 이상의 큰 block에 대한 allocation이다.
+
+첫 번째 종류의 작은 block에 대해서 Pintos는 16B, 32B, 64B, 128B, 256B, 512B, 1024B 크기 중 가장 가까운 크기의 메모리를 할당한다. 예를 들어, 28B를 요구하는 malloc 호출에 대해서는 32B 크기의 메모리를 할당해준다. 
+
+두 번째 종류의 큰 block에 대해서 Pintos는 페이지 단위로 메모리를 할당한다. 한 페이지는 4KiB이므로, 1KiB (=1024B)를 초과하는 메모리 block에 대해서는 4KiB 단위로 메모리를 할당해준다고 생각하면 될 것이다.
+
+이때, 작은 크기의 block들 중 같은 크기를 가진 것들을 Pintos는 한 페이지(혹은 arena)에 모아 저장한다. 예를 들어서, 32B 크기의 block들은 하나의 페이지에 저장되고, 512B 크기의 block들은 다른 페이지에 저장되는 식이다.
+
+desc는 이러한 '같은 크기를 가진 block들의 집합'을 나타내기 위한 구조체이다. 먼저 첫번째 원소인 block_size는 block의 크기를 저장하며, 두 번째 원소인 blocks_per_arena는 한 페이지(정확히 말하자면 arena)에 들어갈 수 있는 block의 수를 저장한다. free_list는 palloc을 이용하지 않고 지금 당장 사용 가능한 block들의 리스트이다. lock은 해당 desc의 멤버를 변경할 때 쓰이는 lock이다.
+
+```C
+struct arena 
+  {
+    unsigned magic;            
+    struct desc *desc;         
+    size_t free_cnt;           
+  };
+```
+arena는 한 페이지를 나타내기 위한 자료구조이다. 페이지를 그대로 쓰면 좋겠지만, 페이지 경계를 넘어간 메모리 접근을 감지하거나 해당 페이지가 어떤 desc에 속해있는지, 해당 페이지에 free block은 몇 개 있는지등을 저장하는 자료구조가 필요하다. arena는 이러한 역할을 하는 구조체이다. arena 또한 해당 페이지에 저장되므로, 한 arena에서 사용 가능한 메모리의 크기는 한 페이지의 크기인 4KiB에서 arena 자체의 크기를 뺀 크기가 될 것이다.
+
+__malloc_init__
+```C
+void
+malloc_init (void) 
+{
+  size_t block_size;
+
+  for (block_size = 16; block_size < PGSIZE / 2; block_size *= 2)
+    {
+      struct desc *d = &descs[desc_cnt++];
+      ASSERT (desc_cnt <= sizeof descs / sizeof *descs);
+      d->block_size = block_size;
+      d->blocks_per_arena = (PGSIZE - sizeof (struct arena)) / block_size;
+      list_init (&d->free_list);
+      lock_init (&d->lock);
+    }
+}
+```
+malloc을 사용하기 위한 desc를 초기화하는 함수이다. 이때 desc의 blocks_per_arena가 한 페이지의 크기에서 arena의 크기를 뺀 값을 block_size로 나눈 값으로 초기화됨을 볼 수 있다.
+
+__malloc__
+```C
+void *
+malloc (size_t size) 
+{
+  struct desc *d;
+  struct block *b;
+  struct arena *a;
+
+  /* A null pointer satisfies a request for 0 bytes. */
+  if (size == 0)
+    return NULL;
+
+  /* Find the smallest descriptor that satisfies a SIZE-byte
+     request. */
+  for (d = descs; d < descs + desc_cnt; d++)
+    if (d->block_size >= size)
+      break;
+  if (d == descs + desc_cnt) 
+    {
+      /* SIZE is too big for any descriptor.
+         Allocate enough pages to hold SIZE plus an arena. */
+      size_t page_cnt = DIV_ROUND_UP (size + sizeof *a, PGSIZE);
+      a = palloc_get_multiple (0, page_cnt);
+      if (a == NULL)
+        return NULL;
+
+      /* Initialize the arena to indicate a big block of PAGE_CNT
+         pages, and return it. */
+      a->magic = ARENA_MAGIC;
+      a->desc = NULL;
+      a->free_cnt = page_cnt;
+      return a + 1;
+    }
+
+  lock_acquire (&d->lock);
+
+  /* If the free list is empty, create a new arena. */
+  if (list_empty (&d->free_list))
+    {
+      size_t i;
+
+      /* Allocate a page. */
+      a = palloc_get_page (0);
+      if (a == NULL) 
+        {
+          lock_release (&d->lock);
+          return NULL; 
+        }
+
+      /* Initialize arena and add its blocks to the free list. */
+      a->magic = ARENA_MAGIC;
+      a->desc = d;
+      a->free_cnt = d->blocks_per_arena;
+      for (i = 0; i < d->blocks_per_arena; i++) 
+        {
+          struct block *b = arena_to_block (a, i);
+          list_push_back (&d->free_list, &b->free_elem);
+        }
+    }
+
+  /* Get a block from free list and return it. */
+  b = list_entry (list_pop_front (&d->free_list), struct block, free_elem);
+  a = block_to_arena (b);
+  a->free_cnt--;
+  lock_release (&d->lock);
+  return b;
+}
+```
+위에서 설명한 과정에 따라 메모리를 할당해주는 함수이다. 먼저 malloc은 인자로 들어온 size에 맞는 desc가 있는지를 배열 descs를 순회하며 확인한다. 만약 size에 맞는 desc가 없다면, (즉, size가 1KiB를 초과한다면), 얼마나 많은 페이지가 필요한지를 계산하고 해당하는 만큼의 페이지를 palloc_get_multiple 함수를 호출하여 할당받는다. 이후 해당하는 페이지의 arena를 초기화하고 해당 메모리 영역의 주소 (arena의 내용은 변경되어서는 안되므로 주소에 arena의 크기만큼을 더한다.)를 반환한다.
+
+만약 size에 맞는 desc가 있다면, 해당 desc가 가지고 있는 arena에 남은 메모리 영역이 있는지를 알아본다. 즉 먼저 해당 desc의 free_list가 비어있는지를 확인한다. 만약 free_list가 비어있다면, 해당 desc가 가지고 있는 arena에 남은 메모리 영역이 없다는 뜻이므로 palloc_get_page를 호출하여 새로운 페이지를 할당받고, arena 멤버들을 초기화해준 후 새로이 할당받은 arena를 block 크기 단위로 쪼개 free_list에 넣고 이들 중 하나를 반환한다.
+
+만약 arena에 남은 메모리 영역이 있다면, 해당 메모리 영역의 주소를 반환한다.
+
+주의할 점은 이렇게 새로운 페이지를 할당받고 이를 쪼개서 desc의 free_list에 넣는 과정 이전에 해당 desc의 lock을 acquire해야 한다는 점이다. 즉, 다시 말해 malloc은 lock을 acquire하는데 실패하면 sleep할 수 있으며, 따라서 인터럽트 핸들러 내에서 호출해서는 안된다.
+
+__free__
+```C
+void
+free (void *p) 
+{
+  if (p != NULL)
+    {
+      struct block *b = p;
+      struct arena *a = block_to_arena (b);
+      struct desc *d = a->desc;
+      
+      if (d != NULL) 
+        {
+          /* It's a normal block.  We handle it here. */
+
+#ifndef NDEBUG
+          /* Clear the block to help detect use-after-free bugs. */
+          memset (b, 0xcc, d->block_size);
+#endif
+  
+          lock_acquire (&d->lock);
+
+          /* Add block to free list. */
+          list_push_front (&d->free_list, &b->free_elem);
+
+          /* If the arena is now entirely unused, free it. */
+          if (++a->free_cnt >= d->blocks_per_arena) 
+            {
+              size_t i;
+
+              ASSERT (a->free_cnt == d->blocks_per_arena);
+              for (i = 0; i < d->blocks_per_arena; i++) 
+                {
+                  struct block *b = arena_to_block (a, i);
+                  list_remove (&b->free_elem);
+                }
+              palloc_free_page (a);
+            }
+
+          lock_release (&d->lock);
+        }
+      else
+        {
+          /* It's a big block.  Free its pages. */
+          palloc_free_multiple (a, a->free_cnt);
+          return;
+        }
+    }
+}
+```
+free는 malloc으로 할당받은 메모리 block을 free하는 함수이다. free는 malloc으로 메모리 block을 할당받는 과정의 정확히 반대 과정을 수행한다. 먼저 해당 block이 작은 block이라면, 해당 블록을 free_list에 다시 넣어 다음 malloc 호출에서 이를 재사용할 수 있게 한다. 만약 block을 free한 이후 arena가 완전히 비어있다면, 해당 arena 전체를 free_list에서 삭제하고 palloc_free_page로 free해준다.
+
+만약 free하고자 하는 block이 큰 block이라면, palloc_free_multiple을 호출하여 해당 arena에 속한 페이지만큼을 free해준다.
+
 
 ## Design Description
 ### Alarm Clock
