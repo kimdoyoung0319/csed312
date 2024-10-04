@@ -1591,7 +1591,16 @@ Pintos에서 구현된 alarm clock은 상술한 바와 같이 busy waiting으로
 이러한 구조는 alarm clock을 위한 thread를 새로 만드는 방식에 비해 여러 장점이 있다. 첫째로, alarm clock을 위한 thread를 새로 만드는 방식은 그 alarm clock thread 자체가 계속 ready 상태와 running 상태를 오가며 실행되어야 한다는 단점이 있다. 또한, alarm clock thread는 틱마다 정확히 실행되는 것이 불가능해 해당 thread를 깨워야 할 때 정확히 깨우는 것이 어렵다는 단점이 있다. 이에 반해 인터럽트 핸들러를 이용하는 방식은 시스템 자원 소모가 적고(컴퓨터의 입장에서는 1초에 100번은 굉장히 적은 빈도라는 점을 기억하자), 인터럽트가 잠시 비활성화되거나 다른 인터럽트 핸들러의 실행이 오래 걸리는 경우를 제외하고는 매 틱마다 alarm clock을 확인해 정확히 thread를 깨울 수 있다는 장점이 있다.
 
 ### Priority Scheduler & Priority Donation
-TODO
+기존 pintOS의 스케쥴러는 Round-Robin 방식으로 구현이 되어 있으며, time_slice에 따라서 차례대로 thread의 실행과 yield를 반복하는 구조로 구성되어 있었다. 이번 경우 priority scheduler를 통해서 우선순위에 따라 thread를 실행하고, 이 경우 발생될 수 있는 문제를 해결하는 것이 구현의 핵심이다.
+
+우선 priority scheduler를 구현하기 위해서 수정할 부분은 ready_list와 관련된 부분일 것이다. ready_list에 push 하거나 pop 할 때 가장 높은 priority 를 갖는 thread가 return 되도록 해야 한다. 둘 중에 pop 할 때 thread를 확인하여 priority가 가장 높은 원소를 반환하기로 했다. 따라서, ready_list를 수정하는 `scedule ()` 의 `thread_next_to_run ()` 에서 높은 priority를 갖는 원소를 return 하도록 수정해야 한다. 
+이외에도 `thread_create`, `set_prirority`와 같이 우선순위가 수정되거나 새로운 thread가 생성되는 경우에는 현재 실행 중인 thread와의 비교가 추가로 필요하며, ready_list에 추가되는 thread가 더 높다면 현재 실행되는 순서와 바꿔주는 부분이 추가로 필요하다.
+
+다음 해결할 문제는 priority invasion이다. 이 경우는 priority가 더 높지만, Lockd으로 인해 실행하지 못하게 될 경우에 발생할 역전 현상을 해결하는 것이 목표이다. 가능한 상황으로는 기존 thread가 lock을 갖고 있는 상황에서, 우선순위가 더 높은 thread가 생성되고, 이 thread가 lock_acquire를 시도하게 될 경우 lock을 갖지 못하는 대신에, priority가 바로 Lock holder에게 전달되어 기존 thread가 더 높은 priority를 갖고 실행할 수 있어야 한다. 혹은 같은 상황에서 하나 더 lock을 acquire하려고 하는 thread가 생성되었을 때에도 마찬가지로 우선순위 donation을 통해 해결해야 한다. 이외에도 2번 이상 donation이 발생하는 경우가 존재할 수 있다. lock 을 acuquire하는 thread B에서 우선순위가 더 높은 C가 lock acquire하려 할 때, B에게 기부되어야 하고, 만약 B 내부에서 다시 다른 critical section의 lock을 acquire하려 할 때 우선순위가 더 낮은 A가 lock을 이미 갖고 있다면 다시 donation이 과정이 필요하게 된다.
+
+이러한 가능한 케이스를 고려할 때, nested donation을 처리하기 위해서는 각 thread가 자신에게 기부한 thread의 list을 저장하고 있어야 하며, lock을 소유하지 못한 경우에는 기다리고 있는 lock을 함께 저장하고 있어야 한다. 이외에도 우선순위를 다시 복구할 때 사용하기 위해 original priority를 함께 갖고 있어야 한다. 
+
+기존 함수들의 경우에는 synch.c의 lock_acquire에서는 lock을 얻으려 할 때 holder가 있다면 우선순위를 확인하여 holder에게 우선순위를 기부할 수 있어야 하고, 이 때 단순히 lock->holder에게만 기부할 것이 아닌, 만약 그 holder가 다시 다른 Lock을 얻기 위해 기다리고 있는 경우를 가정할 수 있으므로, lock->holder->waiting_lock 으로 접근하여 중첩하여 접근할 필요가 있고, pintOS doc에서 표기된 것처럼 8번까지의 중첩된 경우에 수행하여야 한다. 이와 반대로 sema_up의 경우에는 sema의 waiter 중에서 가장 우선순위가 높은 thread를 unblock 시켜야 하고, lock_release에서는 lock의 holder에서 그 lock으로 인해 holder에게 기부한 기부자 목록의 thread를 list에서 지워야 한다. 하지만, 다른 Lock으로 인해 기부받은 경우가 존재할 수 있으므로, list에서 해당하는 Lock만을 지워야 하며, 이 때 우선순위를 복구할 때도 original_priority로 바로 복구하는 것이 아니라, holder의 list에 남은 thread 중에서 복구를 해야한다. 마지막으로 남은 것이 cond와 관련된 부분으로 이때에도 각 sema를 기다리고 있는 waiters의 thread 중에서 우선순위에 따라 가장 우선순위가 높은 sema부터 cond를 통해 signal을 보내야 하므로, cond_wait 에서는 list에 넣을 때 정렬이 필요하며, cond_signal 에서도 마찬가지로 우선순위가 가장 높은 thread가 위치한 sema_up을 진행 하고, broadcast 시에도 우선순위에 따라서 signal(sema_up) 전달해야 한다.
 
 ### Advanced Scheduler
 Project 1의 마지막 과제로, Pintos 문서에서는 multilevel feedback priority queue scheduling (MLFQS)의 구현에 대해 설명한다. MLFQS는 우선순위별로 나누어진 여러 큐를 이용한 scheduling 방식으로, thread의 실행에 따른 feedback을 도입해 한 thread가 긴 시간동안 실행되지 못했다면 해당 thread의 우선순위를 올리고, 최근에 CPU를 점유한 thread는 우선순위를 낮추는 식으로 동작한다.
