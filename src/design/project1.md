@@ -16,6 +16,20 @@ priority scheduler의 경우 기존에 결정된 priority를 기반으로 가장
 
 ## Code Analysis
 ### Thread - thread.h / thread.c
+Thread는 아래의 이미지와 같은 cycle을 갖고 있다. 우선 `thread_init()`을 통해서 생성되고, 초기에 생성된 첫 thread는 THREAD_RUNNING 상태로 실행되는 상태이다. 하지만, 이후 time_slice가 넘어가거나 혹은 등등의 이유로 인해 `thread_yield()`가 실행되면 ready_list에 추가되며, THREAD_READY 상태로 전환된다. 혹은 실행 중이었던 thread가 lock, semaphore 등등으로 인해 block되는 경우에는 `thread_block()`함수로 인해 실행이 중지가 되고, waiting_list에 추가되게 된다. 만약 block 당하게 되었던 lock이 해제가 되거나 혹은 semaphore가 up되는 등등의 이유로 인해 다시 자원을 점유할 수 있는 상황이 된다면, `thread_unblock()`를 통해 다시 THREAD_READY 상태로 돌아가며(혹은 `thread_create()` 통해 새롭게 생성된 thread도 마찬가지로 THREAD_READY 상태) 이러한 상태의 thread들은 `schedule()` 함수를 통해서 다시금 THREAD_RUNNING 상태로 CPU를 점유하게 된다. 이렇게 실행되던 THREAD_RUNNING 상태의 thread는 실행이 완료되면 상태를 THREAD_DYING으로 변화하게 되고, 이후 이 상태인 thread들은 `schedule()`함수 내에서 할당받은 메모리와 스텍을 모두 해제하고 삭제되며 종료하게 된다. 
+![thread_cycle](./thread_cycle.png)
+
+__global variables__
+```C
+static struct list ready_list;
+static struct list all_list;
+static struct thread *idle_thread;
+static struct thread *initial_thread;
+static struct lock tid_lock;
+```
+ready_list는 THREAD_READY 인 상태의 thread를 모두 저장하고 있는 리스트로, `schedule()`에서 해당 리스트에서 thread를 찾아서 실행하게 된다. all_list는 모든 thread를 저장하고 있는 리스트로 생성된 모든 thread(종료되기 전)를 저장한다. idle_thread는 실행될 thread가 없을 경우 CPU 점유를 위한 idle_thread를 저장하는 포인터이며, initial_thread의 경우 threading을 지원하기 위해 생성되는 thread로 가장 초기에 생성된 initial thread를 담고 있게 된다. tid_lock의 경우 thread를 생성하고 생성된 thread에 id를 할당할 때 사용되는 lock으로 해당 lock을 acquire 한 상태에서만 tid를 생성하여 전달하게 될 때 사용된다.
+
+
 ```C
 struct thread
   {
@@ -185,6 +199,15 @@ thread_current (void)
 ```
 현재 실행 중인 thread를 반환하는 함수로, running_thread 를 통해서 thread를 받아와서 t가 thread인지 여부와 running 중인지 여부를 확인한 뒤 t를 반환한다.
 
+__thread_tid__
+```C
+thread_tid (void) 
+{
+  return thread_current ()->tid;
+}
+```
+현재 실행 중인 thread의 tid를 반환하는 함수이다.
+
 __thread_exit__
 ```C
 thread_exit (void) 
@@ -260,6 +283,9 @@ thread_get_priority (void)
 }
 ```
 현재 thread의 priority 를 반환한다.
+
+__thread nice & load_avg & recent_cpu__
+각각 현재 구현되지 않은 상황으로 Nice값을 계산하고 설정하는 함수와 load_avg를 계산하고, recent_cpu를 계산하는 함수로 mlfqs 구현 시 완성될 함수이다.
 
 __idle__
 ```C
@@ -551,6 +577,45 @@ sema_up (struct semaphore *sema)
 }
 ```
 이 함수도 마찬가지로 우선 interrupt를 중지하고 함수를 시작하게 된다. 이후 waiters list에서 가장 맨 앞의 thread를 unblock 시키고, semaphore_value를 올리므로써 해당 thread에게 semaphore 를 넘겨주는 과정을 수행하게 된다. 이후 interrupt 를 다시 설정하고 함수를 종료하게 된다.
+
+__sema_self_test__
+```C
+void
+sema_self_test (void) 
+{
+  struct semaphore sema[2];
+  int i;
+
+  printf ("Testing semaphores...");
+  sema_init (&sema[0], 0);
+  sema_init (&sema[1], 0);
+  thread_create ("sema-test", PRI_DEFAULT, sema_test_helper, &sema);
+  for (i = 0; i < 10; i++) 
+    {
+      sema_up (&sema[0]);
+      sema_down (&sema[1]);
+    }
+  printf ("done.\n");
+}
+```
+semaphore를 테스트하기 위한 함수로 sema_test_helper를 실행시키는 thread를 생성하여 해당 thread와 차례로 sema를 up과 down을 반복하여 실행하게 되며 확인하는 함수로 2개의 sema를 생성하여 하나의 sema를 self_test에서는 up만 실행하고 다른 sema를 down만 실행하게 되어 sema가 고정되도록 한다.
+
+__sema_test_helper__
+```C
+static void
+sema_test_helper (void *sema_) 
+{
+  struct semaphore *sema = sema_;
+  int i;
+
+  for (i = 0; i < 10; i++) 
+    {
+      sema_down (&sema[0]);
+      sema_up (&sema[1]);
+    }
+}
+```
+위의 sema_self_test 와 함께 실행되도록 돕는 함수로 이 함수를 실행하는 thread를 생성하게 되며, 이 함수에서는 하나의 sema를 down 만 하게 되며, 다른 하나의 sema는 up만 실행하게 된다.
 
 ### Lock - synch.h / synch.c
 ```C
