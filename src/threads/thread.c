@@ -1,3 +1,6 @@
+// TODO: Separate priority donation routine from MLFQS scheduling in synch.c
+// TODO: Modify the parts that calculates maximum among list entries to use 
+//       list_max().
 #include "threads/thread.h"
 #include <debug.h>
 #include <stddef.h>
@@ -400,10 +403,7 @@ thread_set_priority (int new_priority)
   cur->before_priority = new_priority;
 
   if (thread_mlfqs) 
-    {
-      list_remove (&cur->elem);
-      list_push_back (&mlfqs_queues[new_priority], &cur->elem);
-    }
+    return;
   else
     {
       for (e = list_begin (&cur->donator_list); 
@@ -562,16 +562,24 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
   t->magic = THREAD_MAGIC;
+
+  /* Initialize mlfqs variables. */
+  t->nice = 0;
+  t->recent_cpu = (fixed) 0;
+
+  /* PRIORITY should be ignored when thread_mlfqs enabled. If so, 
+     calculate initial priority based on initial nice and
+     recent_cpu. */
+  if (thread_mlfqs)
+    t->priority = calculate_priority (t);
+  else
+    t->priority = priority;
   
   /* Initialize donator list. */
   list_init (&t->donator_list);
   t->before_priority = priority;
 
-  /* Initialize mlfqs variables. */
-  t->nice = 0;
-  t->recent_cpu = (fixed) 0;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
@@ -921,13 +929,7 @@ calculate_priority (struct thread *t) {
   int result = x_to_n_near (sub_x_n (sub_x_y (n_to_x (PRI_MAX), 
                             div_x_n (t->recent_cpu, 4)), 2*(t->nice)));
 
-  if (result < PRI_MIN)
-    return PRI_MIN;
-
-  if (result > PRI_MAX)
-    return PRI_MAX;
-  
-  return result;
+  return result > PRI_MAX ? PRI_MAX : (result < PRI_MIN ? PRI_MIN : result);
 }
 
 /* Calculates new recent_cpu value of thread T according to current 
