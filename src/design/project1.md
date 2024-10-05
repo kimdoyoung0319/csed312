@@ -966,7 +966,7 @@ Pintos에서 이러한 구조를 채택한 이유로는 첫째로 인터럽트 �
 
 한 가지 중요한 점은 인터럽트 핸들러 내에서는 절대로 thread_block 등을 호출해서 현재 함수를 sleep시켜서는 안된다는 점이다. 이는 인터럽트 핸들러 수행 중에는 다른 인터럽트를 처리할 수 없기 때문이다. 만약 인터럽트 핸들러 내에서 현재 thread를 block하고 다른 thread로 실행 흐름을 전환한다면, (thread_block에서 schedule을 호출하므로 block 이후 다른 thread에 실행 흐름을 넘기는 것은 가능하다.) 아직 인터럽트 핸들러가 끝나지 않았으므로 다른 인터럽트 발생 시 이를 CPU가 받아들이는 것이 불가능해진다. 따라서, 타이머 인터럽트에 기반해 다른 thread들을 reschedule하는 것이 불가능해지고 이는 OS의 scheduling 시스템을 망가트린다. Pintos에서는 thread_block에서 ASSERT를 통해 인터럽트 핸들러 실행 중이 아님을 확인함으로써 이러한 상황을 막는다.
 
-또한, 이는 직접 thread_block, timer_sleep 등을 호출해 현재 함수의 실행을 중지하는 것 뿐만 아니라, synchronization primitive를 이용해 특정 공유 자원에 접근하려 하거나 malloc을 통해 메모리를 할당받으려 하는 것에도 적용된다. Semaphore 등의 synchronization primitive는 해당 primitive를 얻지 못했을 경우 thread_block을 호출하여 함수 실행을 중지시키고, malloc은 이러한 synchronization primitive를 이용하기 때문이다.
+또한, 이는 직접 thread_block, timer_sleep 등을 호출해 현재 함수의 실행을 중지하는 것 뿐만 아니라, 특정한 synchronization primitive에 대한 operation을 이용해 특정 공유 자원에 접근하려 하거나 malloc을 통해 메모리를 할당받으려 하는 것에도 적용된다. sema_down 등의 operation은 해당 primitive를 얻지 못했을 경우 thread_block을 호출하여 함수 실행을 중지시키고, malloc은 이러한 synchronization primitive를 이용하기 때문이다.
 
 ```C
 struct intr_frame
