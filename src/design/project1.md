@@ -883,16 +883,13 @@ __too_many_loops__
 static bool
 too_many_loops (unsigned loops) 
 {
-  /* Wait for a timer tick. */
   int64_t start = ticks;
   while (ticks == start)
     barrier ();
 
-  /* Run LOOPS loops. */
   start = ticks;
   busy_wait (loops);
 
-  /* If the tick count changed, we iterated too long. */
   barrier ();
   return start != ticks;
 }
@@ -1618,3 +1615,34 @@ MLFQS는 이렇게 계산된 우선순위마다 큐 하나씩을 두고, thread�
 MLFQS를 구현하기 위해서는 일단 위의 지표들을 계산하는 함수가 필요할 것이다. 또한, 위의 지표들은 1초, 혹은 4틱에 한번씩 재계산되어야 하므로 타이머 인터럽트 핸들러에서 지표를 업데이트하는 함수를 호출하는것이 알맞을 것이다.
 
 또한, 여러 큐를 선언하고 이들 큐에서 가장 우선순위가 높고 큐에서 가장 오래 기다린 thread를 찾아야 할 것이다. 마지막으로, 지표가 업데이트되면서 우선순위도 재계산될텐데, 이러한 재계산된 우선순위에 따라 각 큐에 thread를 재배치해야 할 것이다.
+
+## Design Discussion
+### Pintos의 thread system을 어떻게 초기화하는가?
+Pintos의 high-level 커널 초기화를 담당하는 main 함수를 살펴보면, Pintos의 thread system 초기화는 thread_init 함수를 호출하면서 시작됨을 알 수 있다. Pintos의 thread는 각각 4KiB 크기의 페이지를 할당받으며, 각 thread의 정보는 이 페이지의 가장 밑에 struct thread 형태의 구조체로 저장된다. 하지만, Pintos가 처음 시작될때는 현재 실행되고 있는 thread의 정보도 초기화되지 않은 상태이므로, thread_init 함수에서는 main 실행시 처음 ESP 레지스터가 가리키는 위치를 포함하는 페이지를 main thread의 페이지로 하여 init_thread 함수 호출을 통해 초기화한다.
+
+thread_init 함수를 통해 main thread를 초기화한 이후, Pintos는 thread_start 함수를 호출해 선점형 thread scheduling을 시작한다. 먼저 현재 실행 가능한 thread가 없을 때 실행될 idle thread를 가장 낮은 우선순위를 할당하여 만들고, 인터럽트를 활성화하여 타이머 인터럽트에 의해 각각의 thread에 할당된 최대 time slice가 지났을 때 해당 thread의 CPU 점유 권한을 빼앗아와 다른 thread를 실행할 수 있도록 만든다.
+
+### Pintos의 thread는 어떠한 자료구조를 통해 표현되는가?
+Pintos의 thread는 thread.h 헤더 파일에 선언된 thread 구조체를 통해 표현된다. thread 구조체는 상술한 바와 같이 각 thread에 할당된 페이지의 가장 밑(가장 낮은 주소)에 저장되는 구조체이며, Pintos는 현재 실행되고 있는 thread를 찾아내기 위해 (running_thread, thread_current) 현재 스택 포인터 (ESP 레지스터)가 가리키는 페이지의 가장 밑 주소, 즉 thread 구조체가 위치한 주소를 찾는다. thread 구조체의 각 멤버에 대한 설명은 Thread 모듈에 대한 Code Analysis 단락에서 설명하였다.
+
+### Pintos는 어떻게 ready 상태의 thread를 다시 schedule하는가?
+상술한 바와 같이 Pintos는 schedule 함수를 호출하여 ready 상태의 thread 중 가장 오래 기다린 (Round-Robin 방식) thread 혹은 우선순위가 가장 높은 (Priority Queue, MLFQS) thread를 다시 scheduling한다. 그렇다면 이 schedule 함수는 언제 호출되는가? Pintos에서 기존에 구현된 방식을 살펴보면 schedule 함수는 다음의 세 가지 상황에서 호출된다.
+
+먼저 첫 번째로, thread_block에 의해 현재 실행중인 thread가 block 상태로 바뀔 때 schedule이 호출된다. 두 번째 상황은 thread_yield 함수가 실행되어 현재 실행중인 thread가 CPU 점유권을 넘겨주었을 때이다. 마지막 상황은 thread_exit 함수가 실행되어 현재 thread가 종료될 때다. 이때 주목할 점은 thread_exit 함수가 실행되었다고 해서 바로 thread와 그에 할당된 페이지가 free되는 것이 아니라, 우선 먼저 dying state로 바뀐 후 schedule 함수에서 switch_threads가 실행된 이후 thread_schedule에서 이러한 dying state의 thread들에 할당된 페이지를 free하는 과정을 거친다는 점이다.
+
+### Pintos의 thread의 생애주기는 어떻게 이루어지는가?
+Pintos의 thread는 일반적으로 thread_create 함수를 통해 처음 만들어진다. thread_create 함수는 thread 초기 실행에 필요한 기본적인 정보들을 초기화하고 새로이 생성된 thread의 스택에 초기 실행을 위한 가짜 프레임들을 push한다. 이후 thread_create는 thread_unblock을 호출해 새로 생성된 thread가 ready state에 들어갈 수 있도록 한다.
+
+ready state에 있는 thread는 next_thread_to_run에 의해 선택되어 running state로 변경된 후 실행되게 된다. 이렇게 thread가 실행되던 중 해당 thread에 부여된 time slice가 만료되거나, 해당 thread에서 직접 thread_yield를 호출한 경우 다시 ready state로 변경되고, 다시 다음 실행될 thread가 선택되어 실행된다.
+
+만약 해당 thread에서 직접 thread_block을 호출한 경우, block state에 들어가게 되며, 다른 thread의 thread_unblock 호출에 의해 다시 unblock되기 전까지 실행되지 않게 된다. 해당 thread에서 thread_exit 함수를 호출한 경우에는 thread 실행이 끝나 해당 thread의 페이지가 free될 것을 기다리는 dying state로 들어가게 되어, thread_schedule_tail에서 이러한 dying state의 페이지들을 free시킨다.
+
+### Pintos는 semaphore와 lock을 어떻게 구현하는가?
+Pintos에서는 semaphore를 구현하기 위해 semaphore 구조체를 사용한다. semaphore 구조체는 해당 semaphore의 현재 값을 나타내는 value와, 해당 semaphore를 기다리고 있는 thread의 리스트인 waiters를 가지고 있다. 이러한 semaphore는 sema_down과 sema_up 두 operation에 의해 조작된다. sema_down은 해당 semaphore의 값을 내리는 함수로, 만약 해당 semaphore의 값이 이미 0이라면 자신을 waiters에 넣고 block state에 들어간다. sema_up은 반대로 semaphore의 값을 올리는 함수로, 해당 semaphore를 기다리던 thread 중 가장 먼저 들어온 thread를 unblock하도록 되어있다.
+
+lock은 1 혹은 0의 값만을 가지는 binary semaphore와 현재 lock을 가지고 있는 lock holder를 묶어서 저장하는 lock 구조체로 구현되어 있다. lock_acquire와 lock_release는 각각에 상응하는 semaphore operation sema_down과 sema_up을 이용하여 구현되어 있다.
+
+### Pintos는 timer_sleep을 어떻게 처리하는가?
+상술한 바와 같이, Pintos는 timer_sleep을 무한 loop를 돌며 해당 thread에 실행 흐름이 넘어올 때마다 sleep 시간이 지났는지를 체크한 이후 시간이 넘어오면 yield하는 식으로 구현되어 있다. 
+
+
