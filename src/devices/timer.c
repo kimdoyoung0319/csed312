@@ -8,6 +8,7 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+#include "threads/malloc.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -37,7 +38,7 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 static void check_alarm (void);
-static void set_alarm (int64_t ticks);
+static struct alarm *set_alarm (int64_t ticks);
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -101,14 +102,13 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
-
   ASSERT (intr_get_level () == INTR_ON);
 
-  set_alarm (ticks);
+  struct alarm *alarm = set_alarm (ticks);
 
   intr_disable ();
   thread_block ();
+  free (alarm);
   intr_enable ();
 }
 
@@ -269,34 +269,39 @@ static void
 check_alarm (void)
 {
   struct list_elem *e;
-  struct alarm *current;
+  struct alarm *cur;
 
   for (e = list_begin (&alarm_list); e != list_end (&alarm_list); )
     {
-      current = list_entry (e, struct alarm, elem);
-      e = list_next (e);
+      cur = list_entry (e, struct alarm, elem);
       
-      if (timer_elapsed (current->start) >= current->ticks) {
-        thread_unblock (current->t);
-
-        list_remove (current);
-      }
+      if (timer_elapsed (cur->start) >= cur->ticks) 
+        {
+          thread_unblock (cur->t);
+          e = list_remove (e);
+        }
+      else
+        {
+          e = list_next (e);
+        }
     }
 }
 
 /* Sets an alarm that rings after TICKS, and awakens current thread. 
    */
-static void
+static struct alarm *
 set_alarm (int64_t ticks)
 {
   struct thread *current = thread_current();
-  struct alarm *new_alarm = (struct alarm *) malloc(sizeof(struct alarm));
+  struct alarm *new = (struct alarm *) malloc(sizeof(struct alarm));
 
-  new_alarm->t = current;
-  new_alarm->start = timer_ticks();
-  new_alarm->ticks = ticks;
+  new->t = current;
+  new->start = timer_ticks();
+  new->ticks = ticks;
 
   lock_acquire (&alarm_list_lock);
-  list_push_back (&alarm_list, &new_alarm->elem);
+  list_push_back (&alarm_list, &new->elem);
   lock_release (&alarm_list_lock);
+
+  return new;
 }
