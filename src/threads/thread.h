@@ -28,6 +28,8 @@ typedef int tid_t;
 
 /* Restrictions on donation depth. */
 #define MAX_DONATION_DEPTH 8
+
+/* Restrictions on niceness. */
 #define MAX_NICE 20
 #define MIN_NICE -20
 
@@ -104,7 +106,7 @@ struct thread
     struct list donator_list;           /* List of threads that have donated. */
     struct list_elem donator;           /* List element for donating. */
     struct lock *lock_waiting;          /* Lock this thread is waiting for. */
-    int before_priority;                /* Priority before donation. */
+    int prev_priority;                  /* Previous priority before donation. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -140,6 +142,11 @@ void thread_exit (void) NO_RETURN;
 void thread_yield (void);
 
 void thread_check (void);
+void thread_donate (struct thread *, int);
+void thread_restore (struct lock *);
+
+bool thread_compare (const struct list_elem *, const struct list_elem *, 
+                     void *);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);

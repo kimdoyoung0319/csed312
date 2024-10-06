@@ -1,6 +1,3 @@
-// TODO: Separate priority donation routine from MLFQS scheduling in synch.c
-// TODO: Modify the parts that calculates maximum among list entries to use 
-//       list_max().
 #include "threads/thread.h"
 #include <debug.h>
 #include <stddef.h>
@@ -88,6 +85,7 @@ static void kernel_thread (thread_func *, void *aux);
 static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
+static struct thread *mlfqs_next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
 static void *alloc_frame (struct thread *, size_t size);
@@ -400,20 +398,21 @@ thread_set_priority (int new_priority)
   struct thread *t, *cur = thread_current ();
 
   cur->priority = new_priority;
-  cur->before_priority = new_priority;
+  cur->prev_priority = new_priority;
 
   if (thread_mlfqs) 
     return;
-  else
+
+  /* New priority should be ignored when current thread has been
+     donated from someone else, and the donation is greater than
+     new one. */
+  for (e = list_begin (&cur->donator_list); e != list_end (&cur->donator_list); 
+       e = list_next (e))
     {
-      for (e = list_begin (&cur->donator_list); 
-           e != list_end (&cur->donator_list); 
-           e = list_next (e))
-        {
-          t = list_entry (e, struct thread, donator);
-          if (t->priority > cur->priority)
-            cur->priority = t->priority;
-        }
+      t = list_entry (e, struct thread, donator);
+
+      if (t->priority > cur->priority)
+        cur->priority = t->priority;
     }
   
   thread_check ();
@@ -578,7 +577,7 @@ init_thread (struct thread *t, const char *name, int priority)
   
   /* Initialize donator list. */
   list_init (&t->donator_list);
-  t->before_priority = priority;
+  t->prev_priority = priority;
 
 
   old_level = intr_disable ();
@@ -614,24 +613,9 @@ next_thread_to_run (void)
   if (list_empty (&ready_list))
     return idle_thread;
 
-  struct thread *t, *max_t; 
-  struct list_elem *e, *max_e;
+  struct list_elem *max_e = list_max (&ready_list, thread_compare, NULL);
+  struct thread *max_t = list_entry (max_e, struct thread, elem);
 
-  max_e = list_front (&ready_list);
-  max_t = list_entry (max_e, struct thread, elem);
-
-  for (e = list_begin (&ready_list); e != list_end (&ready_list); 
-       e = list_next (e))
-  {
-    t = list_entry (e, struct thread, elem);
-
-    if (t->priority > max_t->priority)
-    {
-      max_t = t;
-      max_e = e;
-    }
-  }
-  
   list_remove (max_e);
   return max_t;
 }
@@ -764,6 +748,72 @@ thread_check (void)
     thread_yield ();
 }
 
+/* Donates priority of current thread to T, in current depth of DEPTH. 
+   Notice that this function may be called recursively, donating 
+   current thread's priority to all other threads holding the locks 
+   required for current thread. */
+void
+thread_donate (struct thread *t, int depth)
+{
+  t->priority = thread_current ()->priority;
+
+  if (depth >= MAX_DONATION_DEPTH || t->lock_waiting == NULL)
+    return;
+
+  struct lock *waiting = t->lock_waiting;
+  thread_donate (waiting->holder, depth + 1);
+}
+
+/* Restores donated priority of current thread, caused by acquisition
+   of LOCK. It first deletes all donators that donated its priority 
+   to current thread because of LOCK from current thread's donator 
+   list. Also, it restores current thread's priority into the maximum
+   among those remaining in the donator list and previous priority of
+   current thread. */
+void
+thread_restore (struct lock *lock)
+{
+  struct list_elem *e;
+  struct thread *t, *max, *cur = thread_current ();
+  struct list *li = &(cur->donator_list);
+
+  if (list_empty(li))
+    {
+      cur->priority = cur->prev_priority;
+      return;
+    }
+
+  for (e = list_begin (li); e != list_end (li); )
+    {
+      t = list_entry (e, struct thread, donator);
+
+      if (t->lock_waiting != NULL && t->lock_waiting == lock)
+        e = list_remove (e);
+      else
+        e = list_next (e);
+    }
+
+  max = list_entry (list_max (li, thread_compare, NULL), struct thread, 
+                    donator);
+
+  if (max->priority > cur->prev_priority)
+    cur->priority = max->priority;
+  else
+    cur->priority = cur->prev_priority;
+}
+
+/* Compare two list elements that belong to thread according to their 
+   priorities, and return true if thread A's priority is less than B's. */
+bool 
+thread_compare (const struct list_elem *a, const struct list_elem *b,
+                void *aux UNUSED)
+{
+  struct thread *ta = list_entry (a, struct thread, elem);
+  struct thread *tb = list_entry (b, struct thread, elem);
+
+  return ta->priority < tb->priority;
+}
+
 /* Returns maximum priority among threads in current ready_list.
    If ready_list is empty, returns -1. Notice that this function
    must not be used when the kernel uses multilevel feedback queue
@@ -773,19 +823,12 @@ max_priority (void)
 {
   ASSERT (!thread_mlfqs);
 
-  int max = -1;
-  struct list_elem *e = list_begin (&ready_list);
-  struct thread *t, *cur = thread_current ();
-
-  for ( ; e != list_end (&ready_list); e = list_next (e))
-    {
-      t = list_entry (e, struct thread, elem);
-
-      if (t->priority > max)
-        max = t->priority;
-    }
-
-  return max;
+  if (list_empty (&ready_list))
+    return -1;
+  
+  struct thread *max = list_entry (list_max (&ready_list, thread_compare, NULL), 
+                                   struct thread, elem);
+  return max->priority;
 }
 
 /* Multilevel feedback queue scheduler version of max_priority(). */
@@ -943,6 +986,7 @@ calculate_recent_cpu (struct thread *t)
   return add_x_n (mul_x_y (div_x_y (load_avg_doubled,
                   add_x_n (load_avg_doubled, 1)), t->recent_cpu), t->nice);
 }
+
 
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
