@@ -1673,7 +1673,15 @@ nice 값은 한 thread가 얼마나 다른 thread에게 '친절한지'를 나타
 
 recent_cpu 값은 한 thread가 최근에 얼마나 많이 CPU를 점유했는지를 나타내는 지표이다. recent_cpu 값은 해당 thread가 running 상태에 있을 때 한 틱에 1씩 증가한다. running 상태에 있지 않은 thread에 대해서도 recent_cpu는 변화할 수 있다. running 상태에 있지 않은 thread는 recent_cpu 값이 특정 비율로 1초에 1번씩 낮아진다. 이 비율은 현재 CPU를 얻기 위해 경쟁하는 thread 개수가 많아질수록 1에 가까워진다. recent_cpu는 또한 niceness에도 영향받는다. 한 thread가 더욱 친절할수록, recent_cpu 값은 높아진다. recent_cpu는 최근 CPU 점유를 나타내는 지표이므로, 높은 recent_cpu는 낮은 우선순위로 이어지는것이 자연스러울것이다.
 
+
 마지막으로 load_avg는 현재 CPU를 점유하고자 경쟁하는 thread의 수와 비슷한 값을 가지는 지표이다. load_avg는 recent_cpu를 1초마다 계산할 때 recent_cpu값이 낮아지는 비율에 영향을 준다. 즉, load_avg가 높을수록 recent_cpu가 낮아지는 속도는 더 느려지고, load_avg가 낮을수록 recent_cpu가 낮아지는 속도는 더 빠르다.
+
+정리하면 다음과 같이 수식이 정리될 수 있을 것이다.
+$load\_avg = (59/60)*load\_avg + (1/60)*ready\_threads$
+
+$recent\_cpu = (2*load\_avg) / (2*load\_avg + 1) * recent\_cpu + nice$
+
+$priority = PRI\_MAX - (recent\_cpu / 4) - (nice * 2)$
 
 MLFQS는 이렇게 계산된 우선순위마다 큐 하나씩을 두고, thread들이 자신의 우선순위에 따라 다른 큐에 들어가도록 한다. 이때, 만약 한 큐에 여러 thread가 있다면, 이들 thread 중에서는 Round-Robin 방식으로 다음에 실행될 thread를 결정한다.
 
