@@ -293,7 +293,7 @@ static struct alarm *
 set_alarm (int64_t ticks)
 {
   struct thread *current = thread_current();
-  struct alarm *new = (struct alarm *) malloc(sizeof(struct alarm));
+  struct alarm *new = (struct alarm *) malloc (sizeof(struct alarm));
 
   new->t = current;
   new->start = timer_ticks();
