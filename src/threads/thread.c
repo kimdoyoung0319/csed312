@@ -178,12 +178,12 @@ thread_tick (void)
     intr_yield_on_return ();
 
   /* Routines for multilevel feedback queue scheduling. */
-  if (thread_mlfqs) {
+  if (thread_mlfqs) 
     mlfqs_update ();
-    mlfqs_organize ();
 
-    if (timer_ticks () % TIME_SLICE == 0)
-      intr_yield_on_return ();
+  if (thread_mlfqs && timer_ticks () % TIME_SLICE == 0) {
+    intr_yield_on_return ();
+    mlfqs_organize ();
   }
 }
 
@@ -429,28 +429,21 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice) 
 {
-  enum intr_level old_level = intr_disable ();
-  struct thread *t = thread_current ();
+  struct thread *cur = thread_current ();
 
-  t->nice = nice < MAX_NICE ? (nice > MIN_NICE ? nice : MIN_NICE) : MAX_NICE;
+  cur->nice = nice < MAX_NICE ? (nice > MIN_NICE ? nice : MIN_NICE) : MAX_NICE;
 
-  if (t != idle_thread)
-    t->priority = calculate_priority (t);
+  if (cur != idle_thread)
+    cur->priority = calculate_priority (cur);
 
   thread_check ();
-  intr_set_level (old_level);
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  enum intr_level old_level = intr_disable ();
-  struct thread *t = thread_current ();
-  int nice = t->nice;
-  intr_set_level (old_level);
-
-  return nice;
+  return thread_current ()->nice;
 }
 
 /* Returns 100 times the system load average. */
@@ -468,10 +461,8 @@ thread_get_load_avg (void)
 int
 thread_get_recent_cpu (void) 
 {
-  enum intr_level old_level = intr_disable ();
-  struct thread *t = thread_current ();
-  int result = x_to_n_near (mul_x_n (t->recent_cpu, 100));
-  intr_set_level (old_level);
+  struct thread *cur = thread_current ();
+  int result = x_to_n_near (mul_x_n (cur->recent_cpu, 100));
 
   return result;
 }
