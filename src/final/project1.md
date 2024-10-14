@@ -157,11 +157,398 @@ set_alarm (int64_t ticks)
 
 ## Task 2 - Priority Queue Scheduling 
 ### Improvement
-TODO
+디자인 레포트를 통해 알아봤던 것과 같이 우선순위에 따른 스케쥴러를 개발하는 것이 처음 목표이다. 우선순위 스케쥴러를 만들어 우선순위에 따라 쓰레드를 할당하고 실행하게 되도록 수정해야 하며, 단순히 우선순위만 수정할 시에 발생이 가능한 문제인 Prioriry Donation이 작동할 수 있도록 구조를 잘 설계하는 것이 중요하다. 기존 pintOS에서는 스케쥴러는 매우 단순한 구조로 이루어져 있다. `schedule()` 함수에서 다음에 실행될 쓰레들을 불러와서 실행하게 되는데, 이 때 다음으로 실행할 쓰레드를 찾는 것이 바로 `next_thread_to_run()` 이다. ready_list 에서 저장되어 있는 쓰레드 중에서 가장 앞에 있는 쓰레드를 불러와서 리스트에서 제거하고, 반환하는 것이 해당 함수의 실행인데, 이 때 다음에 실행될 쓰레드를 우선순위에 따라서 반환하게 된다면, 우선순위 스케쥴러는 보다 간단하게 구현할 수 있을 것이다. 
+
+이를 구현하기 위해서 제일 주목해서 수정한 부분은 바로 `next_thread_to_run()`이다. 우선 모든 `switch_thread()`는 `schedule()` 에서만 발생되므로 다른 로직을 수정하기보단 기존의 부분만 수정하는 것으로 하였으며, 이 떄 ready_list 에서 가장 높은 우선순위를 가진 부분만 반환하는 것을 통해 우선순위 스케쥴러의 기틀을 마련했다. 하지만 해당 부분만으로는 매우 부족하다.  쓰레드의 우선순위가 바뀌게 되는 경우를 추가적으로 고려해야 한다. 기존 구현에서는 thread의 우선순위가 바뀌거나, 새로운 쓰레드가 생성되거나 하는 경우에 스케쥴러를 실행시키지 않게 되는데, 이제는 우선순위에 따라 작동해야 하므로, 변경 가능한 경우인 `thread_create()` `thread_set_priority()` 에서도 새로운 thread가 생기거나 변경되었을 경우 현재 실행되고 있는 thread와의 우선순위 비교를 진행하고, 문제가 있을 경우 `thread_yield()`를 통해 우선순위를 반영하는 과정을 추가하도록 하는 `thread_check()` 함수를 선언하였다. 이 함수 내에서는 현재 실행 중인 thread_current() 와의 비교를 통해 우선순위에 따라 실행을 유지하게 된다.
+
+다음으로는 우선순위 기부에 관한 구현이다. 이 경우에는 보다 복잡하다. 우선 우선순위가 여러번 기부되는 경우를 고려해야 한다. 그러기 위해서는 처음 고려했던 것은 전역변수를 위한 리스트를 하나 생성해서 기부한 thread, 기부받은 thread를 pair 형태로 기입하여 저장하는 방식이었다. 하지만 이 경우 locK의 종류에 따라 기부가 다르게 시행될 수 있으며, 때에 따라서는 한 thread가 여러 thread에게 기부하기도 하는데 이러한 경우들에 대해서 굉장히 리스트가 너무 비대해지는 경향이 있어, lock을 해제할 때 다시 복원할 때 굉장히 문제가 많이 발생했다. 그래서 구조를 다시 고려한 결과 thread 구조체 자체에 기부해준 쓰레드를 저장하기 위한 donator_list, 기존 우선순위를 저장하기 위한 prev_priority, 어떤 lock에 의해서 block 되었는지 기록할 lock_waiting로 구성되어 있다. 기부한 thread를 저장하고, 이 리스트를 활용하여 기부가 끝난 이후 반환할 때 사용하였다. 이 때 사용할 함수인 `thread_donate()`를 통해서 현재 실행 중인 쓰레드가 lock에 걸려서 실행은 못하면서 lock->holder가 우선순위가 더 높다면 우선순위를 기부하는 방식으로 구현을 완료했다.
+
+우선순위를 복구하는 과정에서 사용할 `thread_restore()`를 정의하였는데, 이 때는 보다 복잡한 과정이 포함되어 있다. 단순히 모든 donator_list의 thread를 해제하면 되는 것이 아닌, 지금 해제하고자 하는 lock에 정확히 해당하는 thread만 unblock 시켜줘야 한다. 따라서 이 경우에 donator_list를 순회하면서 lock_waiting을 확인하여 해당하는 쓰레드만 unblock 시켜주는 과정이 핵심이다. 이외에도 우선순위를 다시 확인하여, 기존에 남아있는 donator_list에 남은 쓰레드의 우선순위 중 가장 높은 우선순위를 가진 쓰레드와 비교하여 우선순위를 다시 복구하게 된다. 
+
+또한, `thread_donate()`와 `thread_restore()`가 실행되는 부분에 대해서 알아보자면, `lock_acquire()`할 떄 lock이 이미 holder가 존재하며, 우선순위가 더 높은 경우에 우선순위 기부를 위해 실행되게 된다. 이외에도 `thread_restore()`는 `lock_release()`에서 실행된다. 다음으로 확인할 부분은 semaphore이다. semaphore에 저장되어 있는 waiters에서도 쓰레드를 unblock 할 때 실행되는 `sema_up()`에서도 우선순위가 가장 높은 waiters의 쓰레드만 unblock하고, `thread_check()`를 통해 다시 실행을 확인하도록 구현을 완료했다.
+
+마지막으로 확인할 부분은 condition 관련한 부분이다. condition에서도 마찬가지로 여러 리스트를 통해서 semaphore를 저장하고 관리하게 되는데 이 때 사용되는 `semaphore_max_priority()`와 `semaphore_compare()`를 통해서 semaphore를 `cond_wait()`에서 정렬하여 실행하게 되고, 마찬가지로 `cond_signal()`과 `cond_braodcast()`에서도 이미 리스트가 정렬되어 있으므로, 정렬을 확인한 뒤에 signal 통해서 해제하게 된다.
+
 ### Detail and Rationale
-TODO
+#### thread_create()
+```C
+tid_t
+thread_create (const char *name, int priority,
+               thread_func *function, void *aux) 
+{
+  ...
+
+  thread_unblock (t);
+  thread_check ();
+
+  return tid;
+}
+```
+thread가 새롭게 생성되는 경우에 새로운 thread가 current와 교체될 수 있도록 하는 thread_check 함수의 실행을 추가하였다. 
+
+#### thread_set_priority()
+```C
+void
+thread_set_priority (int new_priority) 
+{
+  struct list_elem *e;
+  struct thread *t, *cur = thread_current ();
+
+  cur->priority = new_priority;
+  cur->prev_priority = new_priority;
+
+  if (thread_mlfqs) 
+    return;
+
+  /* New priority should be ignored when current thread has been
+     donated from someone else, and the donation is greater than
+     new one. */
+  for (e = list_begin (&cur->donator_list); e != list_end (&cur->donator_list); 
+       e = list_next (e))
+    {
+      t = list_entry (e, struct thread, donator);
+
+      if (t->priority > cur->priority)
+        cur->priority = t->priority;
+    }
+  
+  thread_check ();
+}
+```
+새로운 pirority로 변경을 위해 실행시키는 함수인데, 만약 새로운 우선순위로 업데이트 될 때 기존의 우선순위가 만약에 다른 쓰레드에게 기부받은 경우가 있을 수 있기 때문에 우선 prev_priority에 새롭게 입력받은 우선순위를 넣고, 이후에 donator_list를 순회하면서 더 가장 높은 우선순위로 priority를 대체하게 된다. 또한, 앞에서 언급한 것처럼 우선순위 순서에 변동이 생긴 경우를 위해 thread_check()를 실행하게 된다.
+
+#### init_thread()
+```C
+static void
+init_thread (struct thread *t, const char *name, int priority)
+{
+  ...
+
+  /* Initialize donator list. */
+  list_init (&t->donator_list);
+  t->prev_priority = priority;
+
+  ...
+}
+```
+초기화 시에 새로 추가된 donator_list와 prev_priority를 함께 초기화해주는 부분을 추가했다.
+
+#### next_thread_to_run
+```C
+static struct thread *
+next_thread_to_run (void) 
+{
+  ASSERT (!thread_mlfqs);
+
+  if (list_empty (&ready_list))
+    return idle_thread;
+
+  struct list_elem *max_e = list_max (&ready_list, thread_compare, NULL);
+  struct thread *max_t = list_entry (max_e, struct thread, elem);
+
+  list_remove (max_e);
+  return max_t;
+}
+```
+다음에 실행할 thread를 ready_list에서 priority 기준으로 가장 높은 priority를 가진 max_t를 찾아서 리스트에서 지우고 반환하여, 다음에 switch 될 수 있도록 구현하였다.
+
+#### thread_check()
+```C
+/* Checks ready queue, and yields current thread if thread with 
+   maximum priority has higher priority than current thread. */
+void
+thread_check (void)
+{
+  int max;
+  struct thread *cur = thread_current ();
+
+  if (thread_mlfqs)
+    max = mlfqs_max_priority ();
+  else
+    max = max_priority ();
+
+  if (max > cur->priority)
+    thread_yield ();
+}
+```
+thread_check 함수는 새롭게 선언한 함수로 현재 thread_create(), thread_set_priority(), thread_set_nice() 와 같이 우선순위가 바뀔 수 있는 경우에 실행되는 함수로, 현재 실행되고 있는 쓰레드와 비교하여 우선순위가 더 높다면 실행중인 쓰레드를 thread_yield() 하여 실행을 우선순위에 따라 바꿔주는 함수이다.
+
+#### thread_dondate()
+```C
+/* Donates priority of current thread to T, in current depth of DEPTH. 
+   Notice that this function may be called recursively, donating 
+   current thread's priority to all other threads holding the locks 
+   required for current thread. */
+void
+thread_donate (struct thread *t, int depth)
+{
+  t->priority = thread_current ()->priority;
+
+  if (depth >= MAX_DONATION_DEPTH || t->lock_waiting == NULL)
+    return;
+
+  struct lock *waiting = t->lock_waiting;
+  thread_donate (waiting->holder, depth + 1);
+}
+```
+위에서 언급했던 우선순위 기부를 위해 구현된 함수로 lock_acquire() 에서만 실행되는 함수이다. 우선 lock 을 소유하려고 했지만 소유하지 못한 쓰레드를 대상으로 lock->holder와 비교했을 떄 우선순위가 더 높을 경우에 실행되는 함수이며, 문서에서 언급된 바와 같이 MAX_DONATION_DEPTH를 8로 설정하여 총 8번까지 기부가 진행되도록 구현했으며, 지속적으로 lock_waiting->holder 로 넘어가며 기부할 수 있다면 기부를 반복하게 된다. 이 경우 기부된 이후에 다시 lock_acquire()로 돌아와서 sema_down()으로 실행이 넘어가게 되면서 ready_list에 우선순위를 기부를 받은 쓰레드가 존재하기 때문에 상태가 변경되어 다시 switch가 발생하게 되는 구조로 실행된다. 
+
+#### thread_restore()
+```C
+/* Restores donated priority of current thread, caused by acquisition
+   of LOCK. It first deletes all donators that donated its priority 
+   to current thread because of LOCK from current thread's donator 
+   list. Also, it restores current thread's priority into the maximum
+   among those remaining in the donator list and previous priority of
+   current thread. */
+void
+thread_restore (struct lock *lock)
+{
+  struct list_elem *e;
+  struct thread *t, *max, *cur = thread_current ();
+  struct list *li = &(cur->donator_list);
+
+  if (list_empty(li))
+    {
+      cur->priority = cur->prev_priority;
+      return;
+    }
+
+  for (e = list_begin (li); e != list_end (li); )
+    {
+      t = list_entry (e, struct thread, donator);
+
+      if (t->lock_waiting != NULL && t->lock_waiting == lock)
+        e = list_remove (e);
+      else
+        e = list_next (e);
+    }
+
+  max = list_entry (list_max (li, thread_compare, NULL), struct thread, 
+                    donator);
+
+  if (max->priority > cur->prev_priority)
+    cur->priority = max->priority;
+  else
+    cur->priority = cur->prev_priority;
+}
+```
+마찬가지로 donation 한 쓰레드를 풀어주기 위한 thread_restore()를 선언했다. 우선 이 경우에 현재 실행되고 있는 thread가 lock 을 해제했을 때 실행되도록 한 함수로 제일 중요한 것은 현재 해제하고자 하는 Lock에 해당하는 쓰레드만 리스트에서 제거하는 것이 중요하다. 다시 정리해보면 이전에 lock_acquire()의 실행 중 조건이 맞는 경우 thread_donate()를 통해서 리스트에 추가가 되었고, 우선순위를 thread_current()에게 기부하게 된다. 이후에 sema_down()을 실패하는 과정에서 block을 당하게 되었고, 이후에 lock->holder가 lock_release() 통해서 lock을 해제하는 경우에 thread_restore()함수가 실행이 되며 리스트에 그 lock으로 인해 기부가 된 thread들을 삭제하게 된다. 이후 위에서 언급한 것처럼 다시금 우선순위를 남은 기부자들과 자신의 원래 우선순위와 비교하여 가장 높은 우선순위로 재 조정을 한 뒤에 마무리하게 된다. 이 이후에 sema_up()을 통해서 donator 중에서 실행이 될 것이며, unblock() 이후에 thread_check() 를 통해서 switch 될 것이다.
+
+#### thread_compare()
+```C
+/* Compare two list elements that belong to thread according to their 
+   priorities, and return true if thread A's priority is less than B's. */
+bool 
+thread_compare (const struct list_elem *a, const struct list_elem *b,
+                void *aux UNUSED)
+{
+  struct thread *ta = list_entry (a, struct thread, elem);
+  struct thread *tb = list_entry (b, struct thread, elem);
+
+  return ta->priority < tb->priority;
+}
+```
+우선순위에 따라 쓰레드를 비교하고, 정렬하기 위해 정의된 함수로 우선순위에 따라서 쓰레드를 내림차순으로 정렬되도록 한다.
+
+#### max_priority()
+```C
+/* Returns maximum priority among threads in current ready_list.
+   If ready_list is empty, returns -1. Notice that this function
+   must not be used when the kernel uses multilevel feedback queue
+   scheduling. Use mlfqs_max_priority() instead. */
+static int
+max_priority (void)
+{
+  ASSERT (!thread_mlfqs);
+
+  if (list_empty (&ready_list))
+    return -1;
+  
+  struct thread *max = list_entry (list_max (&ready_list, thread_compare, NULL), 
+                                   struct thread, elem);
+  return max->priority;
+}
+```
+가장 높은 우선순위를 지닌 쓰레드의 우선순위를 반환하는 함수이다. 아까 정의한 thread_compare()를 활용하여 가장 높은 우선순위를 지닌 thread의 우선순위를 반환하게 된다.
+
+#### sema_up()
+```C
+/* Up or "V" operation on a semaphore.  Increments SEMA's value
+   and wakes up one thread of those waiting for SEMA, if any.
+
+   This function may be called from an interrupt handler. */
+void
+sema_up (struct semaphore *sema) 
+{
+  ...
+
+  if (!list_empty (&sema->waiters)) 
+    {
+      max = list_max (&sema->waiters, thread_compare, NULL);
+      list_remove (max);
+      thread_unblock (list_entry (max, struct thread, elem));
+    }
+  sema->value++;
+  
+  thread_check ();
+  intr_set_level (old_level);
+}
+```
+sema_up() 함수의 일 부분을 수정하였으며, sema_up 시에 원래는 sema_waiter에서 가장 front에 있는 쓰레드를 반환하는 구조로 되어있었으나, 우선순위에 따라 가장 높은 우선순위를 지닌 쓰레드를 unblock 하게 되며, 이 쓰레드는 이전에 thread_restore()의 실행 중에 donator_list 에서 제거된 쓰레드 중 하나일 것이다.
+
+#### semaphore_max_priority()
+```C
+/* Returns maximum priority among waiters of S. If S has no waiter,
+   returns PRI_MIN. */
+static int
+semaphore_max_priority (struct semaphore *s)
+{
+  struct list_elem *max;
+
+  if (list_empty (&s->waiters))
+    return PRI_MIN;
+  
+  max = list_max (&s->waiters, thread_compare, NULL);
+  return list_entry (max, struct thread, elem)->priority;
+}
+```
+이 함수는 semaphore 사이의 정렬을 위한 함수에 사용될 함수로, condition에 의해 block 될 경우에 semaphore 내의 waiters 중에서 가장 높은 우선순위에 따라 signal을 보내게 되는데 이를 위해서 semaphore의 리스트를 확인하여 가장 높은 우선순위를 지닌 쓰레드만 반환하게 되는데, 이 때 사용되는 함수로 가장 높은 우선순위를 지닌 쓰레드를 찾아서 반환하게 된다.
+
+### semaphore_compare()
+```C
+/* Compare two semaphore element, and returns true if semaphore
+   associated with A has less maximum priority among waiters than
+   B. */
+static bool 
+semaphore_compare (const struct list_elem *a, 
+                   const struct list_elem *b, void *aux UNUSED)
+{
+  struct semaphore_elem *ea = list_entry (a, struct semaphore_elem, elem);
+  struct semaphore_elem *eb = list_entry (b, struct semaphore_elem, elem);
+
+  return semaphore_max_priority (&ea->semaphore) 
+         < semaphore_max_priority (&eb->semaphore);
+}
+```
+semaphore의 우선순위에 따라 비교하는 함수로, 아까 선언했던 함수를 활용하여 가장 높은 우선순위를 지닌 쓰레드가 기다리고 있는 세마포어를 내림차순으로 정렬하기 위한 비교함수이다.
+
+#### lock_acquire()
+```C
+void
+lock_acquire (struct lock *lock)
+{
+  ...
+
+  if (!thread_mlfqs && holder != NULL && cur->priority > holder->priority)
+    {
+      cur->lock_waiting = lock;
+      list_push_back (&holder->donator_list, &cur->donator);
+      thread_donate (holder, 1);
+    }
+
+  ...
+
+  cur->lock_waiting = NULL;
+}
+```
+lock_acquire 시에 만약 우선순위가 더 낮은 holder로 인해서 우선순위 기부 상황이 생겨난 경우에 donator_list에 해당 쓰레드를 추가하게 되며, thread_donate() 함수의 실행을 통해서 nested donation을 해결하게 된다. 예를 들어 우선순위가 A > B > C 인 경우인데 이미 B -> C 로 기부가 일어난 경우를 가정하면, A 가 실행하여 lock 을 확인했지만 B 가 holder인 경우에는 B에게 기부하는 것도 필요하지만, 이 우선순위가 또다시 C에게 넘어가야 하며, 이를 위해서 thread_donate() 함수를 통해서 C까지 우선순위가 전파되어 실행되도록 구현하였다. 마지막으로 lock_acquire()의 실행이 종료되었다는 의미는 lock을 가졌다는 것이므로 lock_waiting 을 NULL 로 변경하게 된다.
+
+#### lock_release
+```C
+void
+lock_release (struct lock *lock) 
+{
+  ...
+
+  if (!thread_mlfqs)
+    thread_restore (lock);
+
+  ...
+}
+```
+lock_release를 통해서 lock을 해제하는 경우에 아까 위에서 정의했던 thread_restore() 를 실행하여 현재 Lock 에 대해서 모든 donator_list 에서 쓰레드를 제거하게 되며, 여기서 제거된 쓰레드들 중에서 sema_down() 을 통해 unblock 되며, 이렇게 unblock 된 쓰레드가 switch_thread 를 통해서 반환되게 된다.
+
+#### cond_wait()
+```C
+void
+cond_wait (struct condition *cond, struct lock *lock) 
+{
+  ...
+
+  sema_init (&waiter.semaphore, 0);
+  list_insert_ordered (&cond->waiters, &waiter.elem, semaphore_compare, NULL);
+  lock_release (lock);
+  sema_down (&waiter.semaphore);
+  lock_acquire (lock);
+}
+```
+이 경우에는 각 cond 에 해당하는 waiter에 semaphore를 추가하게 되는 경우인데, 이 경우 현재 실행 중인 쓰레드가 해당하는 세마포어를 cond->waiters에 추가해주게 된다. 이 경우에는 앞선 말했던 것처럼 signal과 broadcast를 통해서 sema를 해제해주게 되는데, 사실 이 경우에 문제점으로 생각될 수 있는게 앞선 ready_list의 구현과 같이 리스트를 그대로 두고 Pop 시에만 정렬을 확인하게 될 경우에는 각 sema와 그 해당 sema->waiters 에서도 각각 정렬이 필요하게 되는데 너무나 많은 연산이 한번에 실행될 가능성이 있다고 판단하여 push 시에도 정렬을 확인하는 것으로 구현을 진행했다.
+
+#### cond_signal()
+```C
+void
+cond_signal (struct condition *cond, struct lock *lock UNUSED) 
+{
+  ASSERT (cond != NULL);
+  ASSERT (lock != NULL);
+  ASSERT (!intr_context ());
+  ASSERT (lock_held_by_current_thread (lock));
+
+  if (!list_empty (&cond->waiters)) 
+  {
+    list_sort (&cond->waiters, semaphore_compare, NULL);
+    sema_up (&list_entry (list_pop_back (&cond->waiters),
+                          struct semaphore_elem, elem)->semaphore);
+  }
+}
+```
+위의 구현과 마찬가지로 sema_up 을 실행하게 되는 경우이지만, 사실 list_sort() 는 정의 상으로는 필요가 없는 부분일 수 있지만, 만에 하나 cond_wait() 실행 시에 우선순위의 역전이나 정렬이 깨지는 경우에 대비하기 위해서 정렬을 확인하는 부분을 추가하였다. 정렬되지 않은 리스트일 경우에 시간복잡도는 O(nlogn) 이지만, 정렬된 리스트의 시간복잡도이므로 O(n) 으로 판단하여 혹시 모르는 오류를 방지하기 위한 수단으로 코드를 추가하였다.
+
+#### cond_broadcast()
+```C
+void
+cond_broadcast (struct condition *cond, struct lock *lock) 
+{
+  ASSERT (cond != NULL);
+  ASSERT (lock != NULL);
+
+  if (list_empty (&cond->waiters))
+    return;
+  list_sort (&cond->waiters, semaphore_compare, NULL);
+
+  while (!list_empty (&cond->waiters))
+    cond_signal (cond, lock);
+}
+```
+cond_broadcast를 통해서 signal을 각각 진행할 때에도 마찬가지로 순서가 중요하므로, list_sort() 를 통해 우선순위를 추가로 확인을 진행하고, 이후에 sema의 우선순위에 따라 cond_signal() 을 실행하여 우선순위에 맞춰서 waiters 에서 해제하게 된다.
+
+#### struct thread
+```C
+struct thread
+  {
+    ...
+
+    struct list donator_list;           
+    struct list_elem donator;
+    struct lock *lock_waiting;         
+    int prev_priority; 
+    
+    ...
+  };
+```
+기존 구조체 thread에서 새롭게 추가된 구조체로 기부한 쓰레드를 저장하기 위한 donator_list, 그리고 donator_list에 포함되기 위해서 사용될 list_elem type의 donator, 그리고 만약 lock을 얻지 못해서 block 된 경우를 저장하여 이후 thread_restore()에서 사용하기 위해서 lock_waiting, 마지막으로 우선순위의 원상 복구를 위한 prev_priority 를 구조체에 추가로 선언하게 되었다.
+
 ### Discussion
-TODO
+#### ready_list를 관리할 떄 원소 추가 시에 sort를 유지하는 것이 항상 효율적일까?
+다른 학생들의 design report 발표를 들으며 느꼈던 제일 큰 차이점은 바로 ready_list를 push 시에 정렬을 유지하여 이를 토대로 관리하는 방식이었다. 우리 팀의 구현은 ready_list를 바로 sort 하지 않고, next_thread_to_run() 에서 가장 높은 우선순위의 쓰레드를 반환할 때에만 실행하는 구조로 작성하였다. 이렇게 작성한 이유는 다음과 같다. 우선 구현이 훨씬 간단해진다. 만약에 ready_list에 push 하는 경우를 바꾼다고 가정하게 되면, 모든 push 하는 부분을 수정해야 한다. thread_create(), thread_unblock(), thread_yield()를 포함하여 정말 많은 함수에서 사용되고 있는 부분에서 수정이 필요하게 되며, 이는 단순히 코드 작성 외에도 만약 한 경우를 빠뜨리게 된다면 실행에 심각한 오류를 야기할 수 있다. 이러한 오류를 대비하기 위해서 만약 next_thread_to_run()에도 sort를 체크하는 함수를 추가하게 된다면, 사실상 시간복잡도는 오히려 더 복잡해질 수 있다. 따라서 구현의 편리성과 전반적인 구조 상 pop 할 때 실행하게 되었다. 
+
+다음 이유는 시간복잡도 측면에서 큰 차이가 없기 때문이었다. 우선 sort를 통해 정렬할 경우에는 최대 O(n log n)이 되며 시간 복잡도가 단순 search O(n)에 비해 커지게 되는데, 위에서 언급한 많은 Push되는 부분마다 정렬을 하게 된다면 시간복잡도가 더 커지게 될 것이라 생각했다. 사실 정렬을 초기에 한 이후에는 매번 정렬 시에 O(n)이라고 추론할 수 있으므로 사실 시간복잡도 측면에서는 다른 많은 팀의 구현과 큰 차이가 없다 라고 고려했으며, search 로 인해 시간복잡도가 추가될 수 있는 문제가 있지만, 이는 위에서 언급한 구현 및 구조의 편리성과 비교했을 때 장점이 더 크다고 판단하여 pop 시에 max만 리스트에서 제거하는 구조를 택했다. 
+
+이외에도 cond 에서는 반대로 sort를 유지했는데 위에서 설명한 바와 같이 각 semaphore와 그 내부 waiters의 정렬까지 signal 함수나 broadcast에서 관리하기에는 비효율적이라 판단하여 초기에 정렬을 유지하는 방식의 구현을 택했으며, 이 구현 역시 시간복잡도 측면과 비교해서 구현의 복잡도가 매우 올라간다고 생각해서 push 시에 sort 하는 방식을 선택하였다.
+
+#### donation 시에 기부한 쓰레드의 우선순위를 swap 않는 이유가 무엇일까?
+사실 초기에 swap으로 구현을 설계했었고, 당연히 우선순위를 기부했기 때문에 swap 이 필요하다고 생각했었다. 하지만 초기 구현 방식에서 고민했던 부분은 donation_list를 thread 개별로 소유하고 있기보단 전역변수로 선언하여 모든 기부를 관리하고자 했다. 하지만 이 경우에는 nested donation과 더불어 많은 케이스에서 문제가 예상되었고, 구조가 자연스레 쓰레드 개별적으로 donator를 소유하고 이를 관리하는 방식으로 바뀌었다. 이와 마찬가지로 우선순위 또한 swap이 필요할 것이라 생각했지만, 현재 donator_list 의 구조로 확인했을 때 swap을 하지 않는 이유는 다음과 같다. 첫째, swap과 상관없이 기부반은 쓰레드는 먼저 실행하게 된다. 즉, 기부한 쓰레드는 현재 실행 중인 상황으로 ready_list에는 포함되어 있지 않다. 우선순위가 제일 높기 때문에 현재 실행 중인 쓰레드의 우선순위를 기부받게 된다면 ready_list에서는 당연히 제일 우선순위가 높게 될 것이며, 이는 이후 thread_check() 를 통해서 switch되어 실행하게 되고 추가로 기부한 쓰레드는 thread_block()를 통해 이미 실행되고 있지 않으므로 swap이 필요가 없게 된다. 따라서 굳이 swap하지 않았고, 이 경우에 nested donation이라면 swap을 통해서 구현하게 된다면, 나중에 restore 시에 많은 문제가 발생할 것으로 생각되어 swap 을 택하지 않았다.
 
 ## Task 3 - Multilevel Priority Queue Scheduling
 ### Improvement
@@ -541,4 +928,6 @@ calculate_recent_cpu (struct thread *t)
 결론적으로, 현재 구현이 꽤 큰 용량을 소모하지만 스케줄러의 지연시간이라는 측면에서는 더 효율적임을 알 수 있다. 또한, 스레드의 개수가 많아지고, 메모리의 용량이 더 커질 수록 현재 구현이 더 효율적일 것이다.
 
 ## Overall Discussion
-TODO
+이와 같이 전체 프로젝트 1의 구현을 마칠 수 있었으며, 모든 테스트에 대해서 성공한 것을 확인할 수 있었다.
+
+![test_result](test_result.png)
