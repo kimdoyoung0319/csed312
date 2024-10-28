@@ -179,12 +179,18 @@ struct intr_frame
     uint16_t ss, :16;           /* Data segment for esp. */
   };
 ```
+<!-- TODO: intr-stubs.S 및 interrupt.c 발췌하여 서술 -->
 Project 1 design report에서 서술한 바와 같이, IA32 아키텍처에서 `int` 명령어로
-인터럽트가 발생하면, CPU는 IDTR이 가리키는 IDT를 참조해 해당하는 ISR을 호출한다.
-Pintos에서는 `threads/interrupt.c`의 `intr_init()`에서 IDTR을 IDT를 가리키도록
-초기화한다. 각 IDT에는 `intr_stubs.S`에 정의된 `intrNN_stub`(`NN`은 `00`부터 
-`FF`까지의 16진수)가 등록되어 있어, 인터럽트 발생시 해당 루틴으로 실행 흐름을
-바꾼다. 이후 `intrNN_stub`은 `intr_entry`로 점프하고, `intr_entry`는 
+인터럽트가 발생하면, 프로세서는 IDTR이 가리키는 IDT를 참조해 해당하는 ISR을 
+호출한다. 또한, 프로세서는 IDT 게이트의 GDT selector를 cs 레지스터에 load한다.
+cs 레지스터의 최하위 2비트는 프로세서의 특권 수준(privilege level)을 나타내므로, 
+이 과정에서 프로세서의 실행 모드가 사용자 모드에서 OS/hypervisor 모드로 바뀌게 
+된다.
+
+Pintos에서는 `threads/interrupt.c`의 `intr_init()`에서 IDTR을 IDT를 
+가리키도록 초기화한다. 각 IDT에는 `intr_stubs.S`에 정의된 `intrNN_stub`(`NN`은 
+`00`부터 `FF`까지의 16진수)가 등록되어 있어, 인터럽트 발생시 해당 루틴으로 실행 
+흐름을 바꾼다. 이후 `intrNN_stub`은 `intr_entry`로 점프하고, `intr_entry`는 
 `intr_handler()`를 호출하며, `intr_handler()`는 `intr_register_int()`에 의해
 등록된 인터럽트 핸들러를 호출한다. 이 경우에는 `syscall_handler()`가 인터럽트
 번호 0x30에 대한 인터럽트 핸들러가 된다.
@@ -343,11 +349,12 @@ IA32 아키텍처에서는 페이지 디렉터리(page directory)와 페이지
 발생시켜 운영체제로 하여금 이를 처리하도록 할 것이다.
 
 IA32 아키텍처에서는 운영체제에 직접 물리적 주소로 메모리에 접근할 방법을
-제공하지 않는다. 따라서, Pintos에서는 `PHYS_BASE` 위의 가상 주소 공간을 일대일로
-물리적 주소에 대응시키는 방법을 사용한다. 정확히는, 물리적 주소 `paddr`에 대해
-대응되는 커널 영역 가상 주소는 `paddr + PHYS_BASE`가 된다. Pintos는 
-`threads/init.c`의 `paging_init()`을 통해, 해당 영역의 가상 주소가 물리적 주소에
-바로 대응될 수 있도록 페이지 디렉터리와 페이지 테이블을 초기화한다.
+제공하지 않는다. 따라서, Pintos에서는 `PHYS_BASE` 위의 가상 주소 공간을 
+선형적으로 물리적 주소에 대응시키는 방법을 사용한다. 정확히는, 물리적 주소 
+`paddr`에 대해 대응되는 커널 영역 가상 주소는 `paddr + PHYS_BASE`가 된다. 
+Pintos는 `threads/init.c`의 `paging_init()`을 통해, 해당 영역의 가상 주소가 
+물리적 주소에 바로 대응될 수 있도록 페이지 디렉터리와 페이지 테이블을 
+초기화한다.
 
 ```C
 /* From init.c */
@@ -426,7 +433,7 @@ static inline void *pg_round_down (const void *va) {
 보조 함수이기 때문에 보고서에는 포함하지 않았다.
 
 ```C
-/* threads/pte.h */
+/* From threads/pte.h */
 /* Obtains page table index from a virtual address. */
 static inline unsigned pt_no (const void *va) {
   return ((uintptr_t) va & PTMASK) >> PTSHIFT;
@@ -490,6 +497,226 @@ static inline void *pte_get_page (uint32_t pte) {
 정의되었다. 마지막으로 PDE에서 페이지 테이블 주소를 추출하는 `pde_get_pt()`와
 PTE에서 페이지 주소를 추출하는 `pte_get_page()`가 정의되어 있다.
 
+### Page Directory Abstraction in Pintos
+Pintos에서는 하드웨어 수준의 페이지 테이블 조작을 추상화하기 위해 
+`userprog/pagedir.c`에 정의된 인터페이스 함수를 제공한다. `pagedir.c`의 
+인터페이스 외부에서 프로그래머는 더이상 PTE 혹은 PDE와 직접 상호작용하지 않으며, 
+단지 가상 주소에서 물리 주소로의 대응을 담는 '페이지 디렉터리'라는 객체에 대한 
+추상적 상호작용만을 이용하게 된다.
+
+```C
+/* From userprog/pagedir.c */
+/* Creates a new page directory that has mappings for kernel
+   virtual addresses, but none for user virtual addresses.
+   Returns the new page directory, or a null pointer if memory
+   allocation fails. */
+uint32_t *
+pagedir_create (void) 
+{
+  uint32_t *pd = palloc_get_page (0);
+  if (pd != NULL)
+    memcpy (pd, init_page_dir, PGSIZE);
+  return pd;
+}
+```
+`pagedir_create()`는 새로운 페이지 디렉터리를 생성하여 그 페이지 디렉터리의
+주소를 반환하는 함수이다. 이때, 새롭게 생성된 페이지 디렉터리 또한 `PHYS_BASE`
+위의 커널 영역 가상 주소에 대한 대응은 `init_page_dir`과 같아야 한다. 따라서,
+`pagedir_create()`는 먼저 페이지를 할당받은 후 커널 영역에 대해서는 
+`init_page_dir`을 복사하는 식으로 동작한다.
+
+```C
+/* From userprog/pagedir.c */
+/* Destroys page directory PD, freeing all the pages it
+   references. */
+void
+pagedir_destroy (uint32_t *pd) 
+{
+  uint32_t *pde;
+
+  if (pd == NULL)
+    return;
+
+  ASSERT (pd != init_page_dir);
+  for (pde = pd; pde < pd + pd_no (PHYS_BASE); pde++)
+    if (*pde & PTE_P) 
+      {
+        uint32_t *pt = pde_get_pt (*pde);
+        uint32_t *pte;
+        
+        for (pte = pt; pte < pt + PGSIZE / sizeof *pte; pte++)
+          if (*pte & PTE_P) 
+            palloc_free_page (pte_get_page (*pte));
+        palloc_free_page (pt);
+      }
+  palloc_free_page (pd);
+}
+```
+위 `pagedir_create()`가 페이지 디렉터리 객체의 생성자라면, `pagedir_destroy()`는
+페이지 디렉터리 객체의 소멸자로 기능하는 함수이다. 인자 `pd`의 PDE를 하나씩 
+순회하며, 만약 PDE가 현재 존재한다면, 해당 PDE가 가리키는 페이지 테이블에 속한
+페이지를 하나씩 free시킨다. 이때 또한, 커널 가상 주소 영역의 페이지는 그대로
+유지되어야 하므로 `pd`에서 `pd + pd_no (PHYS_BASE)`, 즉 해당 페이지 디렉터리 중
+사용자 영역에 해당하는 페이지만을 free시킨다. 이후 마지막으로 페이지 
+디렉터리까지 free시키며 함수 실행은 끝난다.
+
+```C
+/* From userprog/pagedir.c */
+/* Returns the address of the page table entry for virtual
+   address VADDR in page directory PD.
+   If PD does not have a page table for VADDR, behavior depends
+   on CREATE.  If CREATE is true, then a new page table is
+   created and a pointer into it is returned.  Otherwise, a null
+   pointer is returned. */
+static uint32_t *
+lookup_page (uint32_t *pd, const void *vaddr, bool create)
+{
+  ...
+
+  /* Check for a page table for VADDR.
+     If one is missing, create one if requested. */
+  pde = pd + pd_no (vaddr);
+  if (*pde == 0) 
+    {
+      if (create)
+        {
+          pt = palloc_get_page (PAL_ZERO);
+          if (pt == NULL) 
+            return NULL; 
+      
+          *pde = pde_create (pt);
+        }
+      else
+        return NULL;
+    }
+
+  /* Return the page table entry. */
+  pt = pde_get_pt (*pde);
+  return &pt[pt_no (vaddr)];
+}
+```
+`lookup_page()`는 인자 `vaddr`에 해당하는 PTE를 페이지 디렉터리에서 찾아 이를 
+반환하는 함수이다. `lookup_page()`는 먼저 `pd`에서 `vaddr`에 해당하는 PDE를 
+찾는다. 이때, 만약 해당 PDE가 `pd`에 존재하지 않는다면, `create` 플래그에 따라
+동작이 달라진다. 만약 `create` 플래그가 참이라면 해당 `vaddr`에 대응되는 새로운
+페이지 테이블을 만들어 그를 `pd`에 등록하고 해당 PTE를 반환한다. 만약 `create`
+플래그가 거짓이라면 새로운 페이지 테이블을 만들지 않고 NULL 포인터를 반환한다.
+
+```C
+/* From userprog/pagedir.c */
+/* Adds a mapping in page directory PD from user virtual page
+   UPAGE to the physical frame identified by kernel virtual
+   address KPAGE.
+   UPAGE must not already be mapped.
+   KPAGE should probably be a page obtained from the user pool
+   with palloc_get_page().
+   If WRITABLE is true, the new page is read/write;
+   otherwise it is read-only.
+   Returns true if successful, false if memory allocation
+   failed. */
+bool
+pagedir_set_page (uint32_t *pd, void *upage, void *kpage, bool writable)
+{
+
+  ...
+
+  pte = lookup_page (pd, upage, true);
+
+  if (pte != NULL) 
+    {
+      ASSERT ((*pte & PTE_P) == 0);
+      *pte = pte_create_user (kpage, writable);
+      return true;
+    }
+  else
+    return false;
+}
+```
+`pagedir_set_page()`는 `pd`에 `upage`에서 `kpage`로의 대응을 추가하는 함수이다.
+만약 `pd`에 `upage`에 해당하는 페이지 테이블이 존재하지 않는 상태에서 새로운 
+페이지 테이블을 위한 페이지를 할당받는데 실패하면 거짓을, 해당 대응을 추가하는
+데 성공하면 참을 반환한다. 
+
+```C
+/* From userprog/pagedir.c */
+/* Looks up the physical address that corresponds to user virtual
+   address UADDR in PD.  Returns the kernel virtual address
+   corresponding to that physical address, or a null pointer if
+   UADDR is unmapped. */
+void *
+pagedir_get_page (uint32_t *pd, const void *uaddr) 
+{
+  uint32_t *pte;
+
+  ASSERT (is_user_vaddr (uaddr));
+  
+  pte = lookup_page (pd, uaddr, false);
+  if (pte != NULL && (*pte & PTE_P) != 0)
+    return pte_get_page (*pte) + pg_ofs (uaddr);
+  else
+    return NULL;
+}
+```
+`pagedir_get_page()`는 `pd`에서 `uaddr`에 해당하는 물리 주소를 찾아 반환하는
+함수이다. 만약 `uaddr`로부터 어떤 물리 주소에 해당하는 대응이 `pd`에 존재한다면
+`uaddr`을 물리 주소로 번역한 결과를 반환하며, 그러한 대응이 존재하지 않는다면
+NULL 포인터를 반환한다.
+
+```C
+/* From userprog/pagedir.c */
+/* Marks user virtual page UPAGE "not present" in page
+   directory PD.  Later accesses to the page will fault.  Other
+   bits in the page table entry are preserved.
+   UPAGE need not be mapped. */
+void
+pagedir_clear_page (uint32_t *pd, void *upage) 
+{
+  uint32_t *pte;
+
+  ASSERT (pg_ofs (upage) == 0);
+  ASSERT (is_user_vaddr (upage));
+
+  pte = lookup_page (pd, upage, false);
+  if (pte != NULL && (*pte & PTE_P) != 0)
+    {
+      *pte &= ~PTE_P;
+      invalidate_pagedir (pd);
+    }
+}
+```
+`pagedir_clear_page()`는 `pd`에서 `upage`를 삭제하는 함수이다. 이때 해당 
+페이지는 할당 해제되는것이 아닌, 단지 `pd`에서 `upage`에서 해당 페이지로의 
+대응이 삭제되는것임에 주의하자. 따라서, `pagedir_clear_page()`에서는 `upage`에
+대응되는 PTE의 존재 여부를 나타내는 비트만 0으로 설정하며, 이후 TLB가 이전의
+대응을 참조하여 오작동하지 않도록 `invalidate_pagedir()`을 호출하여 TLB를 
+초기화한다. 
+
+```C
+/* From userprog/pagedir.c */
+/* Loads page directory PD into the CPU's page directory base
+   register. */
+void
+pagedir_activate (uint32_t *pd) 
+{
+  if (pd == NULL)
+    pd = init_page_dir;
+
+  /* Store the physical address of the page directory into CR3
+     aka PDBR (page directory base register).  This activates our
+     new page tables immediately.  See [IA32-v2a] "MOV--Move
+     to/from Control Registers" and [IA32-v3a] 3.7.5 "Base
+     Address of the Page Directory". */
+  asm volatile ("movl %0, %%cr3" : : "r" (vtop (pd)) : "memory");
+}
+```
+`pagedir_activate()`는 페이지 디렉터리 `pd`를 활성화하여, 이후 프로세서가 가상
+주소를 번역할 때 해당 페이지 디렉터리를 참조하도록 한다. 동작을 자세히 살펴보면,
+`pd`를 물리 주소로 번역하여 `movl` 명령어를 통해 해당 물리 주소를 cr3 레지스터에
+적재하는 것을 볼 수 있다.
+
+이외의 함수들은 `pagedir.c` 바깥으로 노출되지 않는 정적 함수이거나 동작이 지극히
+단순하여 본 보고서에서 설명할 필요가 없으므로 서술을 생략한다.
+
 ### User Memory Access and Handling Page Fault
 사용자의 시스템 호출을 처리하기 위해 커널은 종종 사용자가 제공한 주소를 
 역참조(dereference)하여야 한다. 예를 들어서, 위 단락에서 서술한 바와 같이, 
@@ -506,17 +733,767 @@ PTE에서 페이지 주소를 추출하는 `pte_get_page()`가 정의되어 있�
 따라서, 운영체제에서는 시스템 호출을 처리하기에 앞서서 사용자 프로세스에서 
 전달된 포인터, 레지스터, 혹은 주소 값이 유효한지를 검증하여야 한다. Pintos 
 문서에 따르면, 두 가지 접근이 가능하다. 첫 번째 접근법은 사용자 주소를 
-역참조하기 이전에 이의 유효성을 검증하는 것이다. Pintos에서는 이러한 유효성 
-검증과 하드웨어 수준의 페이지 테이블에 대한 추상화를 위해 `userprog/pagedir.c`에
-정의된 인터페이스 함수를 제공한다.
+역참조하기 이전에 이의 유효성을 검증하는 것이다. 이를 위해서는 먼저
+`vaddr.h`의 `is_usesr_vaddr()`을 이용하여 해당 주소가 사용자 영역 가상 주소임을
+검증한 후, `pagedir_get_page()`의 반환값을 확인하여 현재 프로세스의 페이지
+디렉터리에 해당 주소에 대한 대응이 존재하는지를 확인하면 될 것이다.
 
+하지만, 이러한 방식은 기본적으로 느리다. 그 이유는 다음과 같은데, 현대 
+프로세서에는 MMU(Memory Management Unit)라는 주소 번역만을 담당하는 부분이 
+존재한다. MMU는 전술한 페이지 디렉터리와 페이지 테이블을 통해 주소를 번역하는
+작업을 전담하여 프로세서의 ALU가 실제 연산에 쓰일 수 있도록 돕는다. 첫 번째 
+방법은 이러한 MMU를 이용하지 않고 프로세서가 메모리 번역 작업을 담당하게 되므로
+느리다.
 
+따라서, 일반적인 운영체제에서 주로 쓰이는 방식은 사용자가 전달한 포인터가
+사용자 영역에 있는지만을 검증하고 해당 포인터를 바로 역참조하는 방식이다.
+사용자 포인터가 사용자 영역에 있는지를 검증하는 작업은 컴파일러의 최적화에 따라 
+하나의 명령어로 완료될 수도 있으므로 경제적이다. 그렇다면, 이 방식을 사용할
+경우 사용자가 해당 프로세스의 페이지 디렉터리에 존재하지 않는 페이지에 대한
+주소를 전달한다면 커널은 이를 어떻게 처리해야 할까?
 
+프로세서는 현재 cr3 레지스터가 가리키는 페이지 디렉터리에 존재하지 않는 가상
+주소를 역참조하고자 하면 페이지 폴트 예외를 발생시킨다. 즉, 두 번째 방식을
+채택한 경우에는 페이지 폴트 예외 처리 핸들러에서 해당 상황을 처리해야 한다.
+페이지 폴트 예외 처리 핸들러의 등록은 위 단락에서 서술하였다.
 
+```C
+/* From userprog/exceptioin.c */
+/* Page fault handler.  This is a skeleton that must be filled in
+   to implement virtual memory.  Some solutions to project 2 may
+   also require modifying this code.
 
+   At entry, the address that faulted is in CR2 (Control Register
+   2) and information about the fault, formatted as described in
+   the PF_* macros in exception.h, is in F's error_code member.  The
+   example code here shows how to parse that information.  You
+   can find more information about both of these in the
+   description of "Interrupt 14--Page Fault Exception (#PF)" in
+   [IA32-v3a] section 5.15 "Exception and Interrupt Reference". */
+static void
+page_fault (struct intr_frame *f) 
+{
+  bool not_present;  /* True: not-present page, false: writing r/o page. */
+  bool write;        /* True: access was write, false: access was read. */
+  bool user;         /* True: access by user, false: access by kernel. */
+  void *fault_addr;  /* Fault address. */
 
+  /* Obtain faulting address, the virtual address that was
+     accessed to cause the fault.  It may point to code or to
+     data.  It is not necessarily the address of the instruction
+     that caused the fault (that's f->eip).
+     See [IA32-v2a] "MOV--Move to/from Control Registers" and
+     [IA32-v3a] 5.15 "Interrupt 14--Page Fault Exception
+     (#PF)". */
+  asm ("movl %%cr2, %0" : "=r" (fault_addr));
+
+  /* Turn interrupts back on (they were only off so that we could
+     be assured of reading CR2 before it changed). */
+  intr_enable ();
+
+  /* Count page faults. */
+  page_fault_cnt++;
+
+  /* Determine cause. */
+  not_present = (f->error_code & PF_P) == 0;
+  write = (f->error_code & PF_W) != 0;
+  user = (f->error_code & PF_U) != 0;
+
+  /* To implement virtual memory, delete the rest of the function
+     body, and replace it with code that brings in the page to
+     which fault_addr refers. */
+  printf ("Page fault at %p: %s error %s page in %s context.\n",
+          fault_addr,
+          not_present ? "not present" : "rights violation",
+          write ? "writing" : "reading",
+          user ? "user" : "kernel");
+  kill (f);
+}
+```
+페이지 폴트가 발생하면, 프로세서는 cr2 레지스터에 페이지 폴트를 유발한 가상 
+주소를 저장하고, 커널 스택에 페이지 폴트의 원인에 따른 오류 코드를 push한 후,
+위에서 설명한 예외 처리 과정에 따라 `page_fault()`로 실행 흐름을 옮긴다. 
+`page_fault()`의 현재 구현에서는 페이지 폴트의 원인을 나타내는 불리언 변수를
+오류 코드에서 추출한 값으로 설정하고 `falut_addr`에 cr2 레지스터에 저장된
+가상 주소를 옮기지만, 정작 중요한 페이지 폴트 해결 과정이 구현되어 있지 않고
+그저 페이지 폴트를 발생시킨 프로세스를 종료시키기만 한다.
+
+만약 사용자 메모리 영역에 접근하는데 두 번째 방식을 취한다면, `page_fault()`
+함수를 수정하여 만약 사용자가 제공한 포인터가 유효하지 않아 페이지 폴트가 
+발생한 경우 이를 처리하도록 해야 할 것이다. 두 접근법 모두, 만약 사용자 
+프로세스가 유효하지 않은 주소를 전달하였더라도 메모리 누수 등의 자원 낭비 없이
+프로세스를 종료시켜야 한다.
+
+### File System of Pintos
+이번 프로젝트에서 구현해야 하는 몇몇 시스템 호출은 파일에 수정하거나 생성하고
+제거하며 여는 등의, 파일 시스템과 상호작용하는 작업을 포함한다. 따라서, 이들을
+구현하기에 앞서서 Pintos에서 제공하는 파일 시스템 인터페이스를 살펴보자.
+
+Pintos에서 파일, 다시 말해 `struct file`은 `inode`와 파일의 현재 위치를 나타내는
+`pos`으로 이루어져 있다. `pos`는 단지 파일에 읽거나 쓸 위치를 나타내므로,
+실제 파일에 대한 작업은 `inode`를 통해 이루어진다고 볼 수 있다. 그렇다면, 
+`inode`는 어떤 구조체, 혹은 자료구조일까?
+
+```C
+/* From filesys/inode.c */
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+  {
+    block_sector_t start;               /* First data sector. */
+    off_t length;                       /* File size in bytes. */
+    unsigned magic;                     /* Magic number. */
+    uint32_t unused[125];               /* Not used. */
+  };
+
+...
+
+/* In-memory inode. */
+struct inode 
+  {
+    struct list_elem elem;              /* Element in inode list. */
+    block_sector_t sector;              /* Sector number of disk location. */
+    int open_cnt;                       /* Number of openers. */
+    bool removed;                       /* True if deleted, false otherwise. */
+    int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+    struct inode_disk data;             /* Inode content. */
+  };
+```
+`filesys/inode.c`의 정의를 보면 `struct inode`는 현재 블록에서 섹터 위치를
+나타내는 `sector`와 실제 디스크 상에서 `inode`를 나타내는 `inode_disk` 형 
+`data`의 두 원소와 함께 여러 메타데이터를 가지고 있음을 알 수 있다. 또한,
+`struct inode_disk`는 다시 디스크 상에서 처음 섹터를 나타내는 `start`와
+해당 `inode_disk`의 크기를 나타내는 `length`, 그리고 `inode_disk`의 크기를
+한 섹터 (512B) 크기로 맞추기 위해 삽입된 `unused`의 멤버가 있음을 알 수 있다.
+
+이때 블록, 혹은 `struct block`은 디스크와 같이 연속된 저장 공간을 가진 장치의
+추상화이다. 따라서, Pintos에서는 블록에 대한 연산도 `devices/block.h`와 
+`devices/block.c`에서 제공하지만, 해당 모듈에 대한 설명은 이 프로젝트의 범위를 
+벗어나므로 생략한다. 
+
+따라서, `inode_disk`는 디스크의 특정 섹터, `start`에서 시작해 `length`만큼 
+이어지는 어떤 자료를 나타내는 자료구조이다. 이때, `length`가 한 섹터의 
+크기보다 크다면 해당 자료는 여러 섹터에 나누어져 저장될 수도 있을 것이다.
+`inode`는 이러한 `inode_disk`에 더해, 현재 읽거나 쓰고 있는 섹터를 저장하는 
+자료구조이다. 
+
+Pintos는 이러한 추상화를 통해 메모리 상에 저장되어 있는 한 묶음의 데이터를 
+표현한다. (의도적으로 파일이라는 말을 배제하고 설명하는 중이다.) 그렇다면, 
+이러한 `inode`에 대한 공개 인터페이스 함수에는 무엇이 있을까?
+
+```C
+/* From filesys/inode.c */
+/* Initializes the inode module. */
+void
+inode_init (void) 
+{
+  list_init (&open_inodes);
+}
+```
+`inode` 모듈을 초기화하는 함수이다. `open_inode`는 현재 열려있는 `inode`들을
+저장하는 전역 리스트이다.
+
+```C
+/* Frome filesys/inode.c */
+/* Initializes an inode with LENGTH bytes of data and
+   writes the new inode to sector SECTOR on the file system
+   device.
+   Returns true if successful.
+   Returns false if memory or disk allocation fails. */
+bool
+inode_create (block_sector_t sector, off_t length)
+{
+  struct inode_disk *disk_inode = NULL;
+  bool success = false;
+
+  ASSERT (length >= 0);
+
+  /* If this assertion fails, the inode structure is not exactly
+     one sector in size, and you should fix that. */
+  ASSERT (sizeof *disk_inode == BLOCK_SECTOR_SIZE);
+
+  disk_inode = calloc (1, sizeof *disk_inode);
+  if (disk_inode != NULL)
+    {
+      size_t sectors = bytes_to_sectors (length);
+      disk_inode->length = length;
+      disk_inode->magic = INODE_MAGIC;
+      if (free_map_allocate (sectors, &disk_inode->start)) 
+        {
+          block_write (fs_device, sector, disk_inode);
+          if (sectors > 0) 
+            {
+              static char zeros[BLOCK_SECTOR_SIZE];
+              size_t i;
+              
+              for (i = 0; i < sectors; i++) 
+                block_write (fs_device, disk_inode->start + i, zeros);
+            }
+          success = true; 
+        } 
+      free (disk_inode);
+    }
+  return success;
+}
+```
+`length`만큼의 길이를 가지는 `inode`를 초기화하고, 이를 `sector`가 가리키는
+섹터에 쓰는 명령어이다. `free_map_allocate()`는 `sectors` 만큼의 블록 섹터를
+할당받는 함수이다. 이렇게 디스크 공간을 할당받은 후, `block_write()` 함수를
+호출하여 `sector`가 가리키는 섹터에 해당 `disk_inode`를 쓴다. 이후 할당받은
+섹터를 모두 0으로 초기화하고, 블록에 이미 저장되어 쓸모없어진 `disk_inode`를
+할당 해제하며 함수 실행은 끝난다.
+
+```C
+/* Frome filesys/inode.c */
+/* Reads an inode from SECTOR
+   and returns a `struct inode' that contains it.
+   Returns a null pointer if memory allocation fails. */
+struct inode *
+inode_open (block_sector_t sector)
+{
+  struct list_elem *e;
+  struct inode *inode;
+
+  /* Check whether this inode is already open. */
+  for (e = list_begin (&open_inodes); e != list_end (&open_inodes);
+       e = list_next (e)) 
+    {
+      inode = list_entry (e, struct inode, elem);
+      if (inode->sector == sector) 
+        {
+          inode_reopen (inode);
+          return inode; 
+        }
+    }
+
+  /* Allocate memory. */
+  inode = malloc (sizeof *inode);
+  if (inode == NULL)
+    return NULL;
+
+  /* Initialize. */
+  list_push_front (&open_inodes, &inode->elem);
+  inode->sector = sector;
+  inode->open_cnt = 1;
+  inode->deny_write_cnt = 0;
+  inode->removed = false;
+  block_read (fs_device, inode->sector, &inode->data);
+  return inode;
+}
+```
+`sector`에 해당하는 `disk_inode`를 열어 그 결과를 `inode`로 반환하는 함수이다. 
+만약 해당 `sector`에 해당하는 `disk_inode`가 이미 열려 있는 상태라면 
+`inode_reopen()`을 호출하여 새로운 `inode`를 위한 공간을 할당받는 과정을
+생략한다. 만약 해당 `inode`가 현재 열려있지 않다면 새로운 메모리를 할당받고,
+`open_inodes`에 새로운 `inode`를 삽입하며, `inode` 정보를 초기화하고 블록에서
+해당 `inode`에 해당하는 `disk_inode`를 읽어 이를 `inode->data`에 저장한다.
+
+```C
+/* Frome filesys/inode.c */
+/* Reopens and returns INODE. */
+struct inode *
+inode_reopen (struct inode *inode)
+{
+  if (inode != NULL)
+    inode->open_cnt++;
+  return inode;
+}
+```
+만약 현재 열고자 하는 `inode`가 이미 열려있는 경우 해당 `inode`의 `open_cnt`만을
+증가시키는 함수이다.
+
+```C
+/* Frome filesys/inode.c */
+/* Returns INODE's inode number. */
+block_sector_t
+inode_get_inumber (const struct inode *inode)
+{
+  return inode->sector;
+}
+```
+해당 `inode`의 inode 번호를 반환하는 함수이다.
+
+```C
+/* Frome filesys/inode.c */
+/* Closes INODE and writes it to disk.
+   If this was the last reference to INODE, frees its memory.
+   If INODE was also a removed inode, frees its blocks. */
+void
+inode_close (struct inode *inode) 
+{
+  /* Ignore null pointer. */
+  if (inode == NULL)
+    return;
+
+  /* Release resources if this was the last opener. */
+  if (--inode->open_cnt == 0)
+    {
+      /* Remove from inode list and release lock. */
+      list_remove (&inode->elem);
+ 
+      /* Deallocate blocks if removed. */
+      if (inode->removed) 
+        {
+          free_map_release (inode->sector, 1);
+          free_map_release (inode->data.start,
+                            bytes_to_sectors (inode->data.length)); 
+        }
+
+      free (inode); 
+    }
+}
+```
+`inode`를 닫는 함수이다. 만약 닫은 이후에도 `inode`의 `open_cnt`가 0이 아니라면,
+해당 `inode`를 누군가 계속 열고 있다는 뜻이므로 해당 `inode`를 할당 해제하지는
+않는다. `free_map_release`는 `inode_open()`에서 할당받았던 블록상의 공간을 다시 
+할당 해제하는 함수이다. 이때, 만약 해당 `inode`를 열고 있는 다른 스레드가 
+존재하지 않는다면, `inode`를 저장하는 메모리 공간을 할당 해제한다. 이에 더해, 
+만약 해당 `inode`가 제거된 상태라면 `dick_inode`를 저장하던 섹터와 실제 데이터를
+저장하던 섹터들 모두를 할당 해제하여 다른 `disk_inode`에서 해당 공간을 사용할 수
+있게 한다.
+
+```C
+/* Frome filesys/inode.c */
+/* Marks INODE to be deleted when it is closed by the last caller who
+   has it open. */
+void
+inode_remove (struct inode *inode) 
+{
+  ASSERT (inode != NULL);
+  inode->removed = true;
+}
+```
+`inode`를 삭제됨 상태로 바꿔 이후 `inode`가 닫힐 때 해당 블록 공간을 할당 해제할
+수 있도록 하는 함수이다.
+
+```C
+/* Frome filesys/inode.c */
+/* Reads SIZE bytes from INODE into BUFFER, starting at position OFFSET.
+   Returns the number of bytes actually read, which may be less
+   than SIZE if an error occurs or end of file is reached. */
+off_t
+inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
+{
+  uint8_t *buffer = buffer_;
+  off_t bytes_read = 0;
+  uint8_t *bounce = NULL;
+
+  while (size > 0) 
+    {
+      /* Disk sector to read, starting byte offset within sector. */
+      block_sector_t sector_idx = byte_to_sector (inode, offset);
+      int sector_ofs = offset % BLOCK_SECTOR_SIZE;
+
+      /* Bytes left in inode, bytes left in sector, lesser of the two. */
+      off_t inode_left = inode_length (inode) - offset;
+      int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
+      int min_left = inode_left < sector_left ? inode_left : sector_left;
+
+      /* Number of bytes to actually copy out of this sector. */
+      int chunk_size = size < min_left ? size : min_left;
+      if (chunk_size <= 0)
+        break;
+
+      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
+        {
+          /* Read full sector directly into caller's buffer. */
+          block_read (fs_device, sector_idx, buffer + bytes_read);
+        }
+      else 
+        {
+          /* Read sector into bounce buffer, then partially copy
+             into caller's buffer. */
+          if (bounce == NULL) 
+            {
+              bounce = malloc (BLOCK_SECTOR_SIZE);
+              if (bounce == NULL)
+                break;
+            }
+          block_read (fs_device, sector_idx, bounce);
+          memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
+        }
+      
+      /* Advance. */
+      size -= chunk_size;
+      offset += chunk_size;
+      bytes_read += chunk_size;
+    }
+  free (bounce);
+
+  return bytes_read;
+}
+```
+`inode`를 `offset`에서부터 시작하여 `size`만큼 읽어들여 `buffer_`에 저장하는
+함수이다. 이 함수는 먼저 각 섹터에서 읽어들어야 할 `chunk_size`를 계산한다.
+만약 `chunk_size`가 한 섹터의 크기와 같다면 해당 섹터를 통째로 `buffer`로 
+복사한다. 만약 `chunk_size`가 한 섹터의 크기보다 작다면, 먼저 `bounce`라는
+`buffer`의 버퍼에 섹터를 복사한 후 `bounce`에서 `chunk_size`만큼을 `buffer`에
+복사한다. 이후 읽어들인 크기만큼을 남은 읽어들일 크기인 `size`에서 빼고,
+다음 읽을 위치인 `offset`, 다음 `buffer`에 저장할 위치인 `bytes_read`에 읽어들인
+크기만큼을 더한다.
+
+```C
+/* Frome filesys/inode.c */
+/* Writes SIZE bytes from BUFFER into INODE, starting at OFFSET.
+   Returns the number of bytes actually written, which may be
+   less than SIZE if end of file is reached or an error occurs.
+   (Normally a write at end of file would extend the inode, but
+   growth is not yet implemented.) */
+off_t
+inode_write_at (struct inode *inode, const void *buffer_, off_t size,
+                off_t offset) 
+{
+  const uint8_t *buffer = buffer_;
+  off_t bytes_written = 0;
+  uint8_t *bounce = NULL;
+
+  if (inode->deny_write_cnt)
+    return 0;
+
+  while (size > 0) 
+    {
+      /* Sector to write, starting byte offset within sector. */
+      block_sector_t sector_idx = byte_to_sector (inode, offset);
+      int sector_ofs = offset % BLOCK_SECTOR_SIZE;
+
+      /* Bytes left in inode, bytes left in sector, lesser of the two. */
+      off_t inode_left = inode_length (inode) - offset;
+      int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
+      int min_left = inode_left < sector_left ? inode_left : sector_left;
+
+      /* Number of bytes to actually write into this sector. */
+      int chunk_size = size < min_left ? size : min_left;
+      if (chunk_size <= 0)
+        break;
+
+      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
+        {
+          /* Write full sector directly to disk. */
+          block_write (fs_device, sector_idx, buffer + bytes_written);
+        }
+      else 
+        {
+          /* We need a bounce buffer. */
+          if (bounce == NULL) 
+            {
+              bounce = malloc (BLOCK_SECTOR_SIZE);
+              if (bounce == NULL)
+                break;
+            }
+
+          /* If the sector contains data before or after the chunk
+             we're writing, then we need to read in the sector
+             first.  Otherwise we start with a sector of all zeros. */
+          if (sector_ofs > 0 || chunk_size < sector_left) 
+            block_read (fs_device, sector_idx, bounce);
+          else
+            memset (bounce, 0, BLOCK_SECTOR_SIZE);
+          memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
+          block_write (fs_device, sector_idx, bounce);
+        }
+
+      /* Advance. */
+      size -= chunk_size;
+      offset += chunk_size;
+      bytes_written += chunk_size;
+    }
+  free (bounce);
+
+  return bytes_written;
+}
+```
+`inode`가 가리키는 섹터의 `offset` 위치에 `size`만큼을 `buffer`로 쓰는 함수이다.
+동작은 `block_read()`가 `block_write()`로 바뀐 것을 제외하고는 
+`inode_read_at()`과 같으나, 특정 섹터 전부에 쓰는 것이 아니라면 일단 해당
+섹터를 읽어서 수정될 부분만을 써야 하기 때문에 `block_read()`를 호출해 
+일단 해당 섹터를 읽고, `bounce`에 쓰기를 수행한 이후, 해당 데이터를 블록에
+쓴다는 차이점이 있다.
+
+```C
+/* Frome filesys/inode.c */
+/* Disables writes to INODE.
+   May be called at most once per inode opener. */
+void
+inode_deny_write (struct inode *inode) 
+{
+  inode->deny_write_cnt++;
+  ASSERT (inode->deny_write_cnt <= inode->open_cnt);
+}
+
+/* Re-enables writes to INODE.
+   Must be called once by each inode opener who has called
+   inode_deny_write() on the inode, before closing the inode. */
+void
+inode_allow_write (struct inode *inode) 
+{
+  ASSERT (inode->deny_write_cnt > 0);
+  ASSERT (inode->deny_write_cnt <= inode->open_cnt);
+  inode->deny_write_cnt--;
+}
+
+/* Returns the length, in bytes, of INODE's data. */
+off_t
+inode_length (const struct inode *inode)
+{
+  return inode->data.length;
+}
+```
+해당 `inode`에 쓰기를 금지/허용하는 함수와 `inode`의 길이를 반환하는 함수이다.
+
+```C
+/* From filesys/file.c */
+/* An open file. */
+struct file 
+  {
+    struct inode *inode;        /* File's inode. */
+    off_t pos;                  /* Current position. */
+    bool deny_write;            /* Has file_deny_write() been called? */
+  };
+```
+Pintos에서 파일은 상술한 `inode`와 파일에 읽거나 쓸 위치를 저장하는 `pos`, 
+그리고 파일 쓰기를 거절 혹은 허용할지를 나타내는 `deny_write`의 멤버를 가지고
+있다. 파일에 대한 인터페이스 함수들은 대부분 `inode`에 대한 인터페이스로 
+구현되어 있다. 즉, Pintos에서 파일은 `inode`에 현재 읽거나 쓸 위치에 대한 개념이
+더해진 자료구조라 볼 수 있다.
+
+```C
+/* From filesys/file.c */
+/* Opens a file for the given INODE, of which it takes ownership,
+   and returns the new file.  Returns a null pointer if an
+   allocation fails or if INODE is null. */
+struct file *
+file_open (struct inode *inode) 
+{
+  struct file *file = calloc (1, sizeof *file);
+  if (inode != NULL && file != NULL)
+    {
+      file->inode = inode;
+      file->pos = 0;
+      file->deny_write = false;
+      return file;
+    }
+  else
+    {
+      inode_close (inode);
+      free (file);
+      return NULL; 
+    }
+}
+```
+`inode`에 해당하는 파일을 여는 함수이다. 만약 인자로 넘어온 `inode`가 NULL
+포인터이거나 파일 구조체를 저장할 메모리 할당에 실패하면 NULL 포인터를 반환한다.
+이후 파일 인터페이스 함수들은 단순한 `inode`에 대한 감싸기(wrapper) 함수이므로
+설명을 생략한다.
+
+Pintos 파일 시스템 추상화 계층의 최상위에는 `filesys` 모듈이 있다. `filesys`
+모듈은 블록, `inode`, 파일까지 모든 것을 총망라하여 프로그래머에게 파일 처리
+기능을 제공한다.
+
+```C
+/* From filesys/filesys.c */
+/* Initializes the file system module.
+   If FORMAT is true, reformats the file system. */
+void
+filesys_init (bool format) 
+{
+  fs_device = block_get_role (BLOCK_FILESYS);
+  if (fs_device == NULL)
+    PANIC ("No file system device found, can't initialize file system.");
+
+  inode_init ();
+  free_map_init ();
+
+  if (format) 
+    do_format ();
+
+  free_map_open ();
+}
+```
+파일 시스템을 초기화하는 함수이다. 먼저 블록 장치를 `block_get_role`을 통해 
+가져온 후, 상술한 `inode`를 초기화하는 `inode_init()`, 현재 파일 시스템에
+비어있는 섹터의 위치를 저장하는 자료구조를 초기화하는 `free_map_init()`을
+호출하고, 만약 `format` 인자가 참이라면 파일 시스템을 포맷한다. 마지막으로
+블록 장치에 파일로 저장된 `free_map`을 `free_map_open()`을 통해 열면서 함수
+실행은 끝난다.
+
+```C
+/* From filesys/filesys.c */
+/* Shuts down the file system module, writing any unwritten data
+   to disk. */
+void
+filesys_done (void) 
+{
+  free_map_close ();
+}
+```
+파일 시스템 사용이 끝난 후 이를 종료하는 함수이다.
+
+```C
+/* From filesys/filesys.c */
+/* Opens the file with the given NAME.
+   Returns the new file if successful or a null pointer
+   otherwise.
+   Fails if no file named NAME exists,
+   or if an internal memory allocation fails. */
+struct file *
+filesys_open (const char *name)
+{
+  struct dir *dir = dir_open_root ();
+  struct inode *inode = NULL;
+
+  if (dir != NULL)
+    dir_lookup (dir, name, &inode);
+  dir_close (dir);
+
+  return file_open (inode);
+}
+```
+`name`에 해당하는 파일을 여는 함수이다. 루트 디렉터리에서 파일 이름에 해당하는
+`inode`를 `dir_lookup()` 함수를 이용해 찾고, 이후 `file_open()` 함수를 호출하여
+해당 파일의 파일 포인터를 반환한다.
+
+```C
+/* From filesys/filesys.c */
+/* Deletes the file named NAME.
+   Returns true if successful, false on failure.
+   Fails if no file named NAME exists,
+   or if an internal memory allocation fails. */
+bool
+filesys_remove (const char *name) 
+{
+  struct dir *dir = dir_open_root ();
+  bool success = dir != NULL && dir_remove (dir, name);
+  dir_close (dir); 
+
+  return success;
+}
+```
+파일 시스템에서 `name`이라는 이름을 가진 파일을 삭제하는 함수이다. 이때, 열려
+있는 파일을 삭제하더라도 이미 열려있는 파일에는 영향을 주지 않고 이후에 해당
+파일에 대한 접근만을 막도록 구현되어있다.
+
+주의해야 할 점은 현재 Pintos 구현의 파일 시스템은 내부적으로 데이터 일관성이
+보장되지 않고, 파일의 크기를 바꿀 수 없으며, 파일 하나는 언제나 블록 장치 내의 
+연속된 공간을 차지하도록 구현되어 있는 등의 다양한 제약조건이 있다는 점이다.
+특히 파일 시스템 내부적으로 동기화가 구현되어있지 않다는 점은 이후 파일 시스템
+인터페이스를 이용해 시스템 호출을 구현할 때 주의하여야 할 점이다.
 
 ## Design Description
-<!-- TODO(Doyoung): Add descriptions about how to pass return value to user 
-                    program after system call. -->
+
+### Process Termination Messages
+
+### Argument passing
+
+### System Calls
+Pintos에서 사용자 프로세스가 시스템 호출을 발생시켰을 경우 상술한 대로 0x30
+인터럽트를 발생시킨 후 `syscall_handler()`로 실행 흐름을 넘겨 해당 함수에서
+시스템 호출을 처리하게 된다. 따라서, 각각의 시스템 호출에 대한 처리 방법을
+고민하기에 앞서서 어떻게 시스템 호출의 종류를 알아내고 시스템 호출과 같이
+넘겨진 인자를 처리할 것인지를 고민해야 한다.
+
+상술한 바와 같이, 이는 `syscall_handler()`의 인자 `f`의 멤버 `esp`를 통해 접근
+가능하다. 사용자 프로세스는 시스템 호출을 발생시키며 시스템 호출의 각 인자들과
+시스템 호출 번호를 스택에 push하며, 따라서 `f->esp`를 역참조한 결과는 시스템
+호출 번호가 될 것이다. 또한, `f->esp`를 역참조하기 전 `f->esp`가 유효한 사용자 
+영역 가상 주소인지를 확인하여야 한다.
+
+시스템 호출 번호를 통해 시스템 호출의 종류를 알아냈다면, 이제는 시스템 호출의
+인자 목록을 알아낼 차례다. 전술한 바와 같이, 사용자 스택의 시스템 호출 번호 
+아래에는 0개 혹은 그 이상의 인자들이 push되어 있다. 인자의 개수는 시스템 호출
+종류를 통해 알 수 있다.
+
+이후에는 시스템 호출의 종류에 따라 해당하는 처리 루틴을 실행하면 될 것이다. 
+각 시스템 호출 전부를 `syscall_handler()`에서 처리하는 것은 코드의 가독성에 
+좋지 못한 선택이므로, `static pit_t exec (void *esp)`와 같이 각 시스템 호출을 
+처리하는 함수를 따로 정의하여 그 함수에서 각각의 시스템 호출을 처리하도록
+하는 것이 좋을 것이다.
+
+x86 호출 규약에 따르면 함수의 반환값은 eax 레지스터를 통해 전달되어야 한다.
+따라서, `f->eax`를 각 시스템 호출의 처리 결과로 바꾸어 사용자 프로세스에게 
+시스템 호출이 마치 일반적인 함수 호출과 같이 실행되는 것처럼 보이도록 하여야 
+한다.
+
+또한 마지막으로 사용자 영역 가상 주소를 역참조하는 도중 페이지 폴트가 
+발생하였을 때, `page_fault()`에서 이를 적절히 처리할 수 있도록 `page_fault()`의
+코드를 변경하여야 할 것이다.
+
+위의 논의사항을 (완성되지 않은) 코드로 표현하면 다음과 같을 것이다.
+```C
+/* From userprog/syscall.c */
+void
+syscall_handler (struct intr_frame *f)
+{
+  int syscall_number;
+  uint32_t retval;
+
+  if (is_user_vaddr (f->esp))
+    syscall_number = ((int *) f->esp)[0];
+  else
+    /* The user stack pointer is faulty. Make user process that invoked system 
+       call exit. Be sure not to leak resources when killing the process. */
+
+  switch (syscall_number) {
+    case SYS_HALT:
+      halt (void);
+      break;
+    ...
+    case SYS_TELL:
+      retval = (uint32_t) tell (f->esp);
+      break;
+    ...
+  }
+
+  f->eax = retval;
+}
+```
+```C
+/* From userprog/exception.c */
+static void
+page_fault (struct intr_frame *f) 
+{
+  ...
+
+  /* Determine cause. */
+  not_present = (f->error_code & PF_P) == 0;
+  write = (f->error_code & PF_W) != 0;
+  user = (f->error_code & PF_U) != 0;
+
+  if (not_present && !write && !user)
+    /* This page fault is raised while handling system call. */
+
+  ...
+}
+```
+
+#### User-Process-Manipulating System Calls
+이번 프로젝트에서 구현해야 할 시스템 호출의 종류를 크게 나누자면 다른 사용자
+프로세스에 영향을 미치는 시스템 호출과, 파일 시스템을 수정하는 시스템 호출로
+나눌 수 있을 것이다. 전자에는 `halt()`, `exit()`, `exec()`, `wait()`가 포함되며,
+나머지 시스템 호출은 모두 파일 시스템과 관련된 시스템 호출이다.
+
+`halt()` 시스템 호출의 경우 Pintos 문서에서 서술된 바와 같이 
+`shutdown_power_off()` 호출로 시스템을 종료하면 될 것이다.
+
+`exit()`, `wait()`의 경우 조금 복잡한데, 어떤 프로세스가 종료하는 경우 그 
+프로세스를 기다리고 있는 모든 프로세스를 깨우고, `wait()`의 반환값으로 
+기다리고 있던 프로세스의 종료 코드를 전달해야 하기 때문이다. 한 가지 가능한 
+구현으로는 각 스레드에 해당 스레드를 기다리고 있는 스레드의 리스트를 저장하고, 
+만약 해당 스레드가 종료될 경우 대기 스레드 목록에 있는 모든 스레드에 종료 코드를
+전달하는 방법이 있을 것이다. Pintos의 프로세스는 단 하나의 스레드만을 가질 수 
+있기 때문에, '프로세스'와 '스레드'는 맥락에 상관없이 서로 바뀌어 사용될 수 
+있다는 점을 기억하자.
+
+`exec()`은 `thread_create()`를 통해 `process.c`의 `load()`를 실행하고, 
+`cmd_line`을 쪼갠 인자 목록을 `aux`로 전달받는 새로운 스레드를 생성하면 될 
+것이다.
+
+#### File-System-Manipulating System Calls
+파일 시스템을 조작하는 시스템 호출의 경우, Pintos에서 제공하는 파일 시스템
+인터페이스 함수를 이용하면 될 것이다. 대부분의 시스템 호출이 파일 시스템
+인터페이스와 일대일로 대응되며, Pintos의 파일 시스템은 내부적으로 동기화를
+보장하지 않아 사용자가 이를 사용할 때 명시적으로 임계 구역에 대한 lock 등의
+동기화 대책을 강구해야 한다는 점을 주의하며 구현하면 될 것이다.₩:ㅈ
+
+### Denying Write to Executables
+
 ## Design Discussion
