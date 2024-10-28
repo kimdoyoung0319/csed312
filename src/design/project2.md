@@ -2,7 +2,7 @@
 
 ## Project Description
 Project 2는 크게 프로세스 종료 메세지 출력, 프로그램에 인자 전달, 시스템 호출, 
-실행 파일에 읽기 거절의 네 가지 기능을 구현해야 한다.
+실행 파일에 대한 쓰기 거절의 네 가지 기능을 구현해야 한다.
 
 ### Process Termination Messages
 일반적인 운영체제에서는 사용자 프로그램이 종료되면 그에 따른 종료 메세지를
@@ -56,10 +56,10 @@ Startup Details에서는 이러한 과정에 대해 자세히 서술하고 있�
 변경은 예측할 수 없는 결과를 낳는다.
 
 따라서, 많은 운영체제에서는 실행 파일이 실행되는 도중 해당 파일에 대한 쓰기를
-제한한다. 예를 들어, Linux에서는 파일이 실행되는 도중 해당 파일에 쓰고자 하면
-(일반적으로) ETXTBSY 오류를 발생시킨다. 이번 프로젝트에서는 Pintos에서도 이러한
-기능을 도입하여, 현재 실행중인 파일에 대한 쓰기를 운영체제가 거부하도록 하는
-것을 목표로 한다.
+제한한다. 예를 들어, Linux를 포함한 Unix 계열 운영체제에서는 파일이 실행되는 
+도중 해당 파일에 쓰고자 하면 (일반적으로) ETXTBSY 오류를 발생시킨다. 이번 
+프로젝트에서는 Pintos에서도 이러한 기능을 도입하여, 현재 실행중인 파일에 대한 
+쓰기를 운영체제가 거부하도록 하는 것을 목표로 한다.
 
 ## Code Analysis
 
@@ -168,7 +168,6 @@ syscall_handler (struct intr_frame *f UNUSED)
 /* Interrupt stack frame. */
 struct intr_frame
   {
-
     ...
 
     /* Pushed by the CPU.
@@ -183,7 +182,7 @@ struct intr_frame
 Project 1 design report에서 서술한 바와 같이, IA32 아키텍처에서 `int` 명령어로
 인터럽트가 발생하면, CPU는 IDTR이 가리키는 IDT를 참조해 해당하는 ISR을 호출한다.
 Pintos에서는 `threads/interrupt.c`의 `intr_init()`에서 IDTR을 IDT를 가리키도록
-초기화하고, 각 IDT에는 `intr_stubs.S`에 정의된 `intrNN_stub`(`NN`은 `00`부터 
+초기화한다. 각 IDT에는 `intr_stubs.S`에 정의된 `intrNN_stub`(`NN`은 `00`부터 
 `FF`까지의 16진수)가 등록되어 있어, 인터럽트 발생시 해당 루틴으로 실행 흐름을
 바꾼다. 이후 `intrNN_stub`은 `intr_entry`로 점프하고, `intr_entry`는 
 `intr_handler()`를 호출하며, `intr_handler()`는 `intr_register_int()`에 의해
