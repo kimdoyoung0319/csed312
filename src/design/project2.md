@@ -63,7 +63,7 @@ Startup Details에서는 이러한 과정에 대해 자세히 서술하고 있�
 
 ## Code Analysis
 
-### How system calls are handled in Pintos?
+### System Call Handling Procedure in Pintos
 ```C
 /* From lib/user/syscall.c */
 pid_t
@@ -198,6 +198,141 @@ Pintos에서는 `threads/interrupt.c`의 `intr_init()`에서 IDTR을 IDT를 가�
 종류를 결정한 후 시스템 호출 인자의 타입에 따라 `((t *) f->esp)[1]`과 같이 
 `ARG0`의 값도 참조할 수 있을 것이다.
 
+### Exception Handling Procedure in Pintos
+프로그램이 실행되면서 프로그램은 정적으로 예측할 수 없는 다양한 예외적 상황에
+놓이게 된다. 예를 들어, 가장 쉽게 발생시킬 수 있는 종류의 예외로는 '0으로 
+나누기' 예외가 있으며, 유효하지 않은 명령어 코드(opcode)를 실행하려 할 때에도 
+예외가 발생한다. 또한, 페이지 디렉터리 혹은 페이지 테이블에 해당 VPN(Virtual
+Page Number)에 해당하는 PDE(Page Directory Entry) 혹은 PTE(Page Table Entry)가
+존재하지 않는 경우에도 CPU는 페이지 폴트 예외를 발생시켜 운영체제로 하여금 이를
+처리하도록 요구한다.
+
+```C
+/* From userprog/exception.c */
+void
+exception_init (void) 
+{
+  /* These exceptions can be raised explicitly by a user program,
+     e.g. via the INT, INT3, INTO, and BOUND instructions.  Thus,
+     we set DPL==3, meaning that user programs are allowed to
+     invoke them via these instructions. */
+  intr_register_int (3, 3, INTR_ON, kill, "#BP Breakpoint Exception");
+  intr_register_int (4, 3, INTR_ON, kill, "#OF Overflow Exception");
+  intr_register_int (5, 3, INTR_ON, kill,
+                     "#BR BOUND Range Exceeded Exception");
+
+  /* These exceptions have DPL==0, preventing user processes from
+     invoking them via the INT instruction.  They can still be
+     caused indirectly, e.g. #DE can be caused by dividing by
+     0.  */
+  intr_register_int (0, 0, INTR_ON, kill, "#DE Divide Error");
+  ...
+  intr_register_int (19, 0, INTR_ON, kill,
+                     "#XF SIMD Floating-Point Exception");
+
+  /* Most exceptions can be handled with interrupts turned on.
+     We need to disable interrupts for page faults because the
+     fault address is stored in CR2 and needs to be preserved. */
+  intr_register_int (14, 0, INTR_OFF, page_fault, "#PF Page-Fault Exception");
+}
+```
+이러한 예외는 CPU에 의해 직접 발생하는 경우가 있다는 점을 제외하고는 상술한
+인터럽트의 처리 과정과 거의 동일하게 처리되므로 어떻게 예외 발생 시 예외 처리
+핸들러가 호출되는지에 대한 설명은 생략한다. `int 0x30`으로 인해 0x30 인터럽트가
+발생하여 시스템 호출 핸들러 `syscall_handler()`가 호출되는 것과 같이, 0으로 
+나누기 예외가 발생하였을 때에도 CPU는 `intr00_stub`과 `intr_entry`를 통해
+결국, 위 코드에 따르면, `kill()`을 호출하게 된다.
+
+한 가지 눈여겨볼 점은 예외에 따라 `intr_register_int()`의 두 번째 인자인 `dpl`이
+달라진다는 점이다. `dpl`은 해당 예외를 `int` 명령어로 직접 발생시키기 위해 
+필요한 최소한의 특권 수준(privilege level)을 의미한다. IA32 아키텍처에는 4개의 
+특권 수준이 있지만 보통은 OS/hypervisor 수준을 의미하는 0과 사용자 수준을 
+의미하는 3의 두 가지만 쓰인다. 만약 `intr_register_int()`가 `dpl`을 3으로 하여
+호출되었다면 해당 예외는 `int`, `int3`, `int0` 혹은 `bound` 명령어를 통해 사용자
+프로그램 스스로 발생시킬 수 있다. 하지만, 만약 `dpl`이 0이라면, 해당 예외는
+사용자가 직접 발생시킬 수 없으며 오직 OS/hypervisor 수준에서 발생시키거나 해당
+예외 조건이 만족되어야 발생한다.
+
+Pintos에서는 `userprog/exception.c`의 `exception_init()`를 초기화 과정 중 
+호출하여 이러한 예외 처리 핸들러를 등록한다. 현재 Pintos의 구현을 살펴보면,
+거의 모든 종류의 예외에 대해 `kill()`을 예외 처리 핸들러로 등록하여 예외 발생
+시 해당 프로세스를 종료하도록 구현되어 있는 모습을 볼 수 있다.
+
+```C
+/* From userprog/exception.c */
+/* Handler for an exception (probably) caused by a user process. */
+static void
+kill (struct intr_frame *f) 
+{
+  /* This interrupt is one (probably) caused by a user process.
+     For example, the process might have tried to access unmapped
+     virtual memory (a page fault).  For now, we simply kill the
+     user process.  Later, we'll want to handle page faults in
+     the kernel.  Real Unix-like operating systems pass most
+     exceptions back to the process via signals, but we don't
+     implement them. */
+     
+  /* The interrupt frame's code segment value tells us where the
+     exception originated. */
+  switch (f->cs)
+    {
+    case SEL_UCSEG:
+      /* User's code segment, so it's a user exception, as we
+         expected.  Kill the user process.  */
+      printf ("%s: dying due to interrupt %#04x (%s).\n",
+              thread_name (), f->vec_no, intr_name (f->vec_no));
+      intr_dump_frame (f);
+      thread_exit (); 
+
+    case SEL_KCSEG:
+      /* Kernel's code segment, which indicates a kernel bug.
+         Kernel code shouldn't throw exceptions.  (Page faults
+         may cause kernel exceptions--but they shouldn't arrive
+         here.)  Panic the kernel to make the point.  */
+      intr_dump_frame (f);
+      PANIC ("Kernel bug - unexpected interrupt in kernel"); 
+
+    default:
+      /* Some other code segment?  Shouldn't happen.  Panic the
+         kernel. */
+      printf ("Interrupt %#04x (%s) in unknown segment %04x\n",
+             f->vec_no, intr_name (f->vec_no), f->cs);
+      thread_exit ();
+    }
+}
+```
+`kill()`의 동작을 보면, 인터럽트 프레임에 저장된 cs 레지스터의 값을 확인하여 
+예외가 발생한 프로세스의 코드 세그먼트가 사용자 코드 세그먼트(`SEL_UCSEG`)인지,
+혹은 커널 코드 세그먼트(`SEL_KCSEG`)인지 확인 후 만약 사용자 코드 세그먼트에서
+해당 예외가 발생하였다면 해당 프로세스를 종료한다. 만약 커널 코드 세그먼트에서
+해당 예외가 발생하였다면 커널의 버그이므로 커널 패닉을 일으킨다.
+
+페이지 폴트 단 하나의 예외를 제외하면 Pintos의 현재 구현은 모든 예외에 대해
+`kill()`이 이를 처리하도록 하고 있다. 페이지 폴트 예외와 페이지 폴트 예외 처리
+핸들러에 대해서는 다음 단락에서 더 자세히 살펴볼 것이다.
+
+### User Memory Access and Handling Page Fault
+사용자의 시스템 호출을 처리하기 위해 커널은 종종 사용자가 제공한 주소를 
+역참조(dereference)하여야 한다. 예를 들어서, 위 단락에서 서술한 바와 같이, 
+사용자 프로그램이 시스템 호출을 발생시켰을 때, 커널은 사용자 프로세스의 해당 
+시점의 esp 레지스터를 역참조하여 시스템 호출의 종류와 시스템 호출의 인자를 
+알아내야 한다. 
+
+문제가 되는 점은 이러한 역참조 시 사용자가 전달한 주소, 혹은 포인터는 신뢰할 수
+없다는 점이다. 사용자는 시스템 호출 이전에 esp 레지스터를 조작하여 커널로 하여금
+잘못된 값을 읽거나 수정하도록 만들 수 있다. 만약 esp 레지스터가 커널 영역을 
+가리킨다면, 즉, esp가 `PHYS_BASE` 위를 가리키고 있다면 사용자 프로세스는 시스템
+호출을 통해 본디 불가능해야 할 커널 영역 데이터를 읽거나 수정할 수 있게 된다.
+
+<!-- How is page fault raised when the pointer passed by user process is invalid? -->
+따라서, 운영체제에서는 시스템 호출을 처리하기에 앞서서 사용자 프로세스에서 
+전달된 포인터, 레지스터, 혹은 주소 값이 유효한지를 검증하여야 한다. Pintos 
+문서에 따르면, 두 가지 접근이 가능하다. 첫번째 접근법은 사용자 주소를 역참조하기
+이전에 이의 유효성을 검증하는 것이다.
+
+
 
 ## Design Description
+<!-- TODO(Doyoung): Add descriptions about how to pass return value to user 
+                    program after system call. -->
 ## Design Discussion
