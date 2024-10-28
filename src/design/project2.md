@@ -62,6 +62,1756 @@ Startup Details에서는 이러한 과정에 대해 자세히 서술하고 있�
 쓰기를 운영체제가 거부하도록 하는 것을 목표로 한다.
 
 ## Code Analysis
+### Background of User Program 
+이번 프로젝트에서는 이전 프로젝트와 달리 Kernel thread가 아닌, User Program을 실행시키기 위한 환경을 구현하는 것이 주요한 목표이다. 이를 위해 우선 pintOS에서는 각 User Program이 less priviliged mode에서 구동되며, 동시에 여러 process에서 실행될 수 있으며, 각 프로세느는 multi-thread를 허용하지 않는 one thread로 구성되어 있다는 것을 유념해야 한다. 따라서, 각 프로세스가 모든 machine을 사용할 수 있다는 가정하에 각 process의 schedule과 memeory manage 그리고 state 를 올바르게 관리하기는 것이 핵심이다. 
+
+### Load User Program with File System
+User Program 이 실행되기 위해서는 User Program을 담고 있는 file로 부터 읽어와서 실행해야 한다. 따라서 filesys에 구현되어 있는 코드를 통해 어떻게 Load 되는지 과정을 일부 이해해보고자 한다. 우선 Pintos 문서에 따르면 일부 제약사항이 있는 채로 구현이 되어있다고 한다. 제약사항은 다음과 같다. No internal Sync (자체적으로 Sync 를 위한 로직이 없기 때문에, Sync를 위해서 한 번에 한 Process 만 실행되도록 강제해야 한다), Fixed File Size (파일 사이즈가 고정되어 있으며 root directory 또한 고정되어 있어서 파일의 개수에 제한이 있다), Contigous Sector (한 데이터는 contiguous 하게 저장되어 있어야 한다), No Subdirectory, Limited File Names (14 글자 제한), No repair Tool(파일 시스템 실행 중 오류를 자동으로 복구할 방법이 없음), Filesys_remove (파일이 열려있는 동안 파일이 제거된다면, file descripter가 없는 processor에서는 더 이상 읽기/쓰기가 진행되지 않지만, file descripter가 이미 존재하고 있는 process에서는 process가 종료될 때까지 이미 제거된 파일이지만 지속적으로 읽기 쓰기가 가능하도록 구현되어 있다)
+
+PintOS에서는 가상의 디스크를 생성하여 파일을 저장하고 이를 위에서 소개한 파일 시스템을 통해서 관리된다. 우선 가상의 디스크를 생성하고, 아래의 명령어들을 통해서 초기화와 실행을 확인해볼 수 있다.
+
+```bash
+pintos-mkdisk filesys.dsk --filesys-size=2
+pintos -f -q
+pintos -p ../../examples/echo -a echo -- -q
+pintos -q run 'echo x'
+```
+
+각 명령어를 자세히 살펴보자면, pintos-mkdisk 프로그램을 통해서 filesys.dsk 라는 이름을 가진 2 MB의 용량을 가진 가상의 디스크를 생성하게 된다. 이후 pintos 를 통해서 -f (파일 시스템 포맷), -q (포맷 이후 바로 종료) 를 통해 디스크를 포맷하고, 이후 -p (put) 를 통해서 echo 프로그램을 파일 시스템 내로 복사하게 된다. 이 때 -a 를 통해 이름을 설정하며, -- -p 를 통해 시뮬레이션 된 커널에 -p 옵션이 전달되지 않도록 한다. 이때, 이 명령어들은 kernel의 command line에 실제로는 extract와 append를 통해서 전달되며, scratch partition으로부터 복사하여 전달되는 방식으로 구현되어 있으며 추후 코드 구현을 살펴보면서 더 자세히 살펴보고자 한다. 마지막 명령어는 echo 에게 x의 인자를 전달하는 방식으로 echo 를 실행시키게 된다. 
+
+```bash
+# two lines
+pintos-mkdisk filesys.dsk --filesys-size=2
+pintos -p ../../examples/echo -a echo -- -f -q run ’echo x’
+
+# one line
+pintos --filesys-size=2 -p ../../examples/echo -a echo -- -f -q run ’echo x’
+```
+이외에도 위의 구현과 같이 2줄로 구현을 할 수 있으며, 이외에도 file system disk를 남겨두고 싶지 않은 경우에는 1줄로도 실행할 수 있으며, 이 경우에는 n MB 사이즈를 가진 file system partition을 생성하게 되고, pintos 가 실행되는 중에만 파일이 존재하게 된다. 이외에도 file을 지우기 위한 rm (pintos -q rm file), list를 확인하기 귀한 ls와 파일의 내용을 확인하기 위한 cat을 사용할 수 있다. 이제 filesystem의 구현을 하나씩 살펴보자.
+
+#### off_t.h
+```C
+/* An offset within a file.
+   This is a separate header because multiple headers want this
+   definition but not any others. */
+typedef int32_t off_t;
+
+/* Format specifier for printf(), e.g.:
+   printf ("offset=%"PROTd"\n", offset); */
+#define PROTd PRId32
+```
+offset을 지정할 때 사용되는 int32_t 자료형이 여러 파일에서 사용되므로 off_t.h 파일만을 통해서 off_t 를 지정해주고 있으며, offset을 prinf 를 통해서 출력될 때 사용되도록 stdint.h 에 저장되어 있는 PRId32를 활용하여 PROTd 매크로를 지정하여 printf에서 int32_t 가 올바르게 출력되도록 지정해주고 있다.
+
+#### inode.c & inode.h
+inode란 각 directory 가 갖는 meta data를 저장하기 위한 자료형으로 indoe.c 와 indoe.h 파일을 통해 구현되어 있다. 
+
+```C
+/* Identifies an inode. */
+#define INODE_MAGIC 0x494e4f44
+```
+inode를 식별하기 위한 MAGIC 값이 선언되어 있다.
+
+```C
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+  {
+    block_sector_t start;               /* First data sector. */
+    off_t length;                       /* File size in bytes. */
+    unsigned magic;                     /* Magic number. */
+    uint32_t unused[125];               /* Not used. */
+  };
+```
+inode_disk는 디스크에 저장된 inode에 관련된 정보를 저장하고 있다. start를 통해 data sector의 시작과, length 를 통해 file의 size를 담고 있으며, magic을 통해 inode를 구별할 수 있게 된다. 또한, unused의 경우 BLOCK_SECTOR_SIZE (512) 의 크기를 맞춰주기 위해서 사용되지 않지만, 공간을 할당하게 된다. 이렇게 맞춰주는 이유는 Block (sector) 단위로 데이터가 읽고 쓰이게 되는데, 이 사이즈에 맞춰서 inode와 같은 구조체를 할당해야지 이후에 용량을 관리하기에 수월하기 때문이다.
+
+```C
+struct inode {
+    struct list_elem elem;              /* Element in inode list. */
+    block_sector_t sector;              /* Sector number of disk location. */
+    int open_cnt;                       /* Number of openers. */
+    bool removed;                       /* True if deleted, false otherwise. */
+    int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+    struct inode_disk data;             /* Inode content. */
+};
+```
+inode 의 경우 파일을 관리하기 위한 메타 데이터로 이루어져 있으며, 리스트에 사용되기 위한 elem, 현재 Inode가 저장되어 있는 위치(섹터 번호)를 담고 있는 sector, 현재 해당 파일을 열고 있는 프로세스의 숫자인 open_cnt, 지워진 여부를 담고 있는 removed, 쓰기 권한을 관리하기 위한 deny_write_cnt, 마지막으로 디스크에 저장되어 있는 Indoe content (inode_disk)를 담고 있는 data로 구성되어 있다. 실제 파일이 저장되는 구조는, tmp.txt 라는 파일이 파일 시스템 내에 저장되게 된다면, inode의 번호로 매핑이 되고, inode 구조체는 메모리 상에서 tmp.txt 파일의 위치를 포함한 모든 정보를 저장하게 된다. 여기서 inode_disk는 disk 내에 inode를 저장하게 되는 것으로 이 구조체가 영구적으로 디스크에 저장되며 inode_disk로부터 데이터를 다시 읽어오는 방식으로 파일의 읽기와 쓰기가 작동된다.
+
+```C
+static inline size_t bytes_to_sectors (off_t size)
+```
+이 함수에서는 파일의 크기를 sector 개수로 올림하여 반환하게 된다. 
+
+
+```C
+static block_sector_t byte_to_sector (const struct inode *inode, off_t pos)
+```
+특정 byte의 위치가 어떤 sector에 위치하는지를 확인하는 함수로, data.length가 pos 보다 작게 된다면, 해당 byte 가 파일 내에 위치해 있으므로, 파일의 시작 + offset을 통해서 반환하게 되고, 파일 외부에 있다면 -1을 반환하게 된다.
+
+
+```C
+static struct list open_inodes;
+```
+현재 열려있는 Inode를 담고 있는 리스트로 리스트를 통해서 inode의 중복을 방지하고, 두 번 이상 열릴 경우 같은 struct inode를 반환하게 된다.
+
+```C
+void
+inode_init (void) 
+```
+open_inodes 리스트를 초기화하는 부분이다.
+
+```C
+bool
+inode_create (block_sector_t sector, off_t length)
+```
+매개변수로 입력받은 sector 위치에 inode_disk 를 생성하여 저장하는 함수로, 특정 length Bytes 길이를 가진 파일에 대응하는 inode를 생성하고 이를 메모리에 저장하여 반환하게 된다. 이 과정 중에 실패할 경우 false를 반환하게 된다.
+
+```C
+struct inode *
+inode_open (block_sector_t sector)
+```
+sector로부터 inode를 읽어오는 연산을 수행하며, 우선 open_inodes를 순회하면서 열려있는지 확인하고, 해당 sector 내에 inode가 저장되어 있다면 struct inode를 새롭게 선언하여 반환하게 되고, 없다면 null pinoter를 반환하게 된다. 
+
+```C
+struct inode *
+inode_reopen (struct inode *inode)
+```
+기존에 열려있는 Inode를 추가로 열 때 사용하는 함수로, Open_cnt 를 늘리게 된다.
+
+```C
+block_sector_t
+inode_get_inumber (const struct inode *inode)
+```
+inode가 저장되어 있는 sector의 번호를 반환하게 된다.
+
+```C
+void
+inode_close (struct inode *inode) 
+```
+열려있는 Inode를 닫는 함수로, open_cnt를 확인하여 마지막으로 혼자서 inode를 읽고 있다면 free 해주게 되고, 만약 removed가 true 로 되어있는 경우에도 마찬가지로 free 해주게 된다.
+
+```C
+void
+inode_remove (struct inode *inode) 
+```
+직접 Inode를 삭제하는 것이 아닌 inode를 지우도록 removed를 true로 바꿔준다
+
+```C
+off_t
+inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
+```
+inode 위치에서 offset만큼 떨어진 위치부터 size 만큼의 데이터를 읽어서 Buffer에 저장하는 함수로 실제로 byte_to_sector를 통해 sector의 index로 변환하여 각 Index를 증가시켜가면서 inode를 읽어오게 된다. 이후 실제로 읽은 byte 수를 반환하게 되고, 이를 size와 비교하여 EOF에 도달했는지 혹은 오류가 발생했는지 여부를 함께 확인할 수 있다.
+
+```C
+off_t
+inode_write_at (struct inode *inode, const void *buffer_, off_t size,
+                off_t offset) 
+```
+위의 함수와 비슷하게 inode에서 offset만큼 떨어진 위치부터 시작하여 Buffer에 저장되어 있는 내용들을 inode에 저장하게 된다. 마찬가지로 size와 비교하는 과정을 통해 에러의 발생 유무와 EOF에 도달했는지 여부를 확인할 수 있으며, 일반적으로는 EOF 에 도달하게 되며 아직 파일의 사이즈를 키우는 연산은 구현되어 있지 않다. 또한, 구현된 함수 내에서 만약 chunk 가 남아있는 sector 의 크기보다 작은 경우에는 기존에 저장되어 있는 데이터가 존재할 수 있으므로 우선적으로 데이터를 읽고 이 이후에 write을 수행해야 한다. 만약 아니라면 해당 sector를 0으로 덮고 write을 진행하게 된다.
+
+```C
+void
+inode_deny_write (struct inode *inode) 
+```
+inode에 대해 write을 금지하는 함수로, deny_write_cnt 를 증가시키게 된다.
+
+```C
+void
+inode_allow_write (struct inode *inode) 
+```
+다시 write을 허용하는 함수인데, 위의 deny 함수를 실행시킨 opener 각각이 inode를 닫기 전에 단 한번씩만 수행해야 하며 deny_write_cnt 를 감소하도록 한다.
+
+```C
+off_t
+inode_length (const struct inode *inode)
+```
+inode->data.length 를 반환하며 inode data의 length 를 반환한다.
+
+#### file.c & file.h
+이제 파일이 실제 어떻게 구성되어있는지 확인해보도록 하자. 위에서 inode를 메타데이터 관점에서 설명했지만, 사실 inode가 실제 어떤 위치에 어떻게 저장되어 있는지 등등을 전부 담고 있는 데이터라고 볼 수 있으며, struct file을 해당 inode를 어떻게 관리하는지 방식으로 구현되어 있다고 이해할 수 있다.
+
+```C
+struct file 
+  {
+    struct inode *inode;        /* File's inode. */
+    off_t pos;                  /* Current position. */
+    bool deny_write;            /* Has file_deny_write() been called? */
+  };
+```
+struct file은 위에서 설명한 file의 정보를 담고 있는 inode, 현재 파일을 읽거나 쓰고 있는 위치를 담고 있는 pos, file의 쓰기를 허용하는지 여부를 담고 있는 deny_write으로 구성되어 있다.
+
+```C
+struct file *
+file_open (struct inode *inode) 
+{
+  struct file *file = calloc (1, sizeof *file);
+  if (inode != NULL && file != NULL)
+    {
+      file->inode = inode;
+      file->pos = 0;
+      file->deny_write = false;
+      return file;
+    }
+  else
+    {
+      inode_close (inode);
+      free (file);
+      return NULL; 
+    }
+}
+```
+실제 file_open 함수를 통해서 파일을 열게 되는데, 우선적으로 inode를 기반으로 파일을 구성하게 된다. 즉, 기존에 생성된 inode를 바탕으로 struct file을 생성하여 반환하게 되는 구조로 이뤄져 있으며, 만약 오류가 발생한 경우에는 NULL을 반환하게 된다.
+
+```C
+struct file *
+file_reopen (struct file *file) 
+{
+  return file_open (inode_reopen (file->inode));
+}
+```
+이미 기존에 열려있는 file을 다시 열 때 수행하는 함수로 inode_reopen을 통해서 inode cnt 개수를 늘려주고 이를 바탕으로 다시 file_open을 통해 새로운 file struct를 생성하게 된다. 아마 inode와 구현이 상이한 이유는 struct file의 경우 각각의 구조체가 현재 읽고 있는 pos 가 다를 수 있으므로 file 은 같은 파일을 열더라도 중복으로 선언하여 사용하지만 inode의 경우 파일의 메타데이터는 똑같으므로 하나의 구조체에서 cnt를 늘려가는 방식으로 구현되어 있는 것으로 생각된다.
+
+```C
+void
+file_close (struct file *file) 
+{
+  if (file != NULL)
+    {
+      file_allow_write (file);
+      inode_close (file->inode);
+      free (file); 
+    }
+}
+```
+파일을 닫을 때 실행하는 함수로, 항상 allow_write를 통해 write을 허용한 뒤에 inode_close를 통해 inode 에도 현재 열려있는 개수를 조절하고 이후 free 해준다.
+
+```C
+struct inode *
+file_get_inode (struct file *file) 
+{
+  return file->inode;
+}
+```
+현재 파일에 해당하는 Inode를 반환한다.
+
+```C
+off_t
+file_read (struct file *file, void *buffer, off_t size) 
+{
+  off_t bytes_read = inode_read_at (file->inode, buffer, size, file->pos);
+  file->pos += bytes_read;
+  return bytes_read;
+}
+```
+file의 내용을 size Bytes 만큼 일어와서 buffer에 저장해주는 함수로 file 내의 pos 위치에서 시작으로 inode_read_at 함수를 통해 실제 읽어오는 연산을 수행하게 된다. 마찬가지로 size와 실제 반환된 bytes_read 크기의 비교를 통해 오류 발생 유무를 확인할 수 있다. inode_read_at 에서는 위에서 설명한 것처럼 inode의 위치 정보를 바탕으로 sector를 찾아 Block_read 를 통해 각 섹터에서 file 의 내용을 읽어오게 되는 방식으로 구현되어 있으며 읽어온 데이터는 Buffer에 저장된다. 파일을 읽은 만큼 pos이 이동하게 된다.
+
+```C
+off_t
+file_write (struct file *file, const void *buffer, off_t size) 
+{
+  off_t bytes_written = inode_write_at (file->inode, buffer, size, file->pos);
+  file->pos += bytes_written;
+  return bytes_written;
+}
+```
+파일에 쓰는 함수의 경우에도 Inode_write_at을 통해서 구현되어 있으며 inode가 담고 있는 위치 정보를 바탕으로 buffer에 있는 데이터를 inode + offset의 위치에 해당되는 sector 부터 쓰게 되는 방식으로 구현되어 있으며, 즉 file pos 위치에서 시작하여 size Bytes 만큼 쓰게 된다. 마찬가지로 return 되는 값을 size와 비교하여 오류 유무를 찾을 수 있으며, file의 크기를 키우는 growth 는 구현되어 있지 않은 상황이다. read와 마찬가지로 읽은 만큼 pos 이 이동하게 된다.
+
+```C
+off_t
+file_read_at (struct file *file, void *buffer, off_t size, off_t file_ofs) 
+{
+  return inode_read_at (file->inode, buffer, size, file_ofs);
+}
+```
+file_read와 매우 흡사하지만, pos 이 연산 전후로 바뀌지 않는다. 
+
+```C
+off_t
+file_write_at (struct file *file, const void *buffer, off_t size,
+               off_t file_ofs) 
+{
+  return inode_write_at (file->inode, buffer, size, file_ofs);
+}
+```
+write와 동일하지만 pos 이 연산 전후로 바뀌지 않는다.
+
+```C
+void
+file_deny_write (struct file *file) 
+{
+  ASSERT (file != NULL);
+  if (!file->deny_write) 
+    {
+      file->deny_write = true;
+      inode_deny_write (file->inode);
+    }
+}
+```
+file이 닫히거나 file_allow_write() 이 실행되기 전까지는 write 연산을 수행하지 못하도록 막아주는 함수로 deny_write을 true로 설정하고 INode_deny_write을 실행하여 Inode_deny_cnt 도 늘려주게 된다.
+
+```C
+void
+file_allow_write (struct file *file) 
+{
+  ASSERT (file != NULL);
+  if (file->deny_write) 
+    {
+      file->deny_write = false;
+      inode_allow_write (file->inode);
+    }
+}
+```
+반대로 write을 허용해주는 함수이지만, 실제로 보면 write 시에 inode_write 통해서 구현이 되어있는데 만약 같은 inode를 가지고 있지만 여러 file을 통해 열려있는 상황이라면 해당 파일에서 allow_write을 통해 write을 허용해주더라도 다른 file에서 deny 를 했다면 file이 열리지 않을 수 있다. 즉, inode의 deny_write_cnt이 0이 될 때 까지는 쓰기가 허용되지 않을 수 있다.
+
+```C
+off_t
+file_length (struct file *file) 
+{
+  ASSERT (file != NULL);
+  return inode_length (file->inode);
+}
+```
+inode_length를 통해서 파일이 차지하고 있는 크기를 반환한다.
+
+```C
+void
+file_seek (struct file *file, off_t new_pos)
+{
+  ASSERT (file != NULL);
+  ASSERT (new_pos >= 0);
+  file->pos = new_pos;
+}
+```
+file의 현재 읽기/쓰기 위치를 new_pos 로 새롭게 조절하는 역할을 담당하고 있다.
+
+```C
+off_t
+file_tell (struct file *file) 
+{
+  ASSERT (file != NULL);
+  return file->pos;
+}
+```
+현재 file의 어느 부분을 읽기/쓰기가 진행되고 있는지(pos)를 반환하게 된다.
+
+#### directory.c & directory.h
+이제 디렉토리가 어떻게 관리되고 있는지를 알아보려 한다. directory 또한 file과 유사하게 inode를 기반으로 구현되어 있다고 이해할 수 있다. 즉, 디렉토리도 일종의 특수한 파일의 개념에서 바라볼 수 있으며 대신에 파일이 저장되어 있는 inode sector의 번호(혹은 서브디렉토리)와 파일의 이름을 담고 있는 dir_entry 로 구성되어 있는 특수한 파일이라 생각해볼 수 있다.
+
+```C
+struct dir 
+  {
+    struct inode *inode;                /* Backing store. */
+    off_t pos;                          /* Current position. */
+  };
+```
+directory 자체로 현재 dir가 위치한 inode를 담고 있는 inode와 해당 디렉토리를 순회하기 위한 pos로 구성되어 있다.
+
+```C
+struct dir_entry 
+  {
+    block_sector_t inode_sector;        /* Sector number of header. */
+    char name[NAME_MAX + 1];            /* Null terminated file name. */
+    bool in_use;                        /* In use or free? */
+  };
+```
+각 디렉토리의 entry 로 파일의 이름과 해당 파일이 저장되어 있는 sector number를 담고 있는 Inode_sector, 현재 사용도고 있는지 여부를 담고 있는 in_use로 구성되어 있다.
+
+```C
+bool
+dir_create (block_sector_t sector, size_t entry_cnt)
+{
+  return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+}
+```
+dir_entry 개수만큼 dir_entry 가 들어갈 수 있도록 sector에 공간을 할당하는 방식으로 구현하는 함수로 마찬가지로 Inode_create을 통해서 생성하게 된다.
+
+```C
+struct dir *
+dir_open (struct inode *inode) 
+{
+  struct dir *dir = calloc (1, sizeof *dir);
+  if (inode != NULL && dir != NULL)
+    {
+      dir->inode = inode;
+      dir->pos = 0;
+      return dir;
+    }
+  else
+    {
+      inode_close (inode);
+      free (dir);
+      return NULL; 
+    }
+}
+```
+inode를 기반으로 해당 inode가 담고 있는 directory의 주소를 반환하여 여는 함수로 calloc을 통해서 새로운 dir 를 생성해주고 이후에 inode를 할당하고, pos를 0으로 설정하는 방식으로 dir 를 여는 것이 구현되어 있으며, 이렇게 생성된 struct dir 를 반환하게 된다.
+
+```C
+struct dir *
+dir_open_root (void)
+{
+  return dir_open (inode_open (ROOT_DIR_SECTOR));
+}
+
+/* Sectors of system file inodes. filesys.h */
+#define FREE_MAP_SECTOR 0       /* Free map file inode sector. */
+#define ROOT_DIR_SECTOR 1       /* Root directory file inode sector. */
+```
+root directory를 열고 그에 해당하는 struct dir 를 반환하는 함수로 filesys.h 에 지정되어 있는 root diectory의 sector를 토대로 inode를 찾아서 반환하고 그 inode를 통해서 root directory를 열게 된다.
+
+```C
+struct dir *
+dir_reopen (struct dir *dir) 
+{
+  return dir_open (inode_reopen (dir->inode));
+}
+```
+이미 열려있는 directory의 inode와 같은 inode를 참고하는 directory를 열 때 사용하는 함수로 inode_reopen을 통해서 매개변수로 입력받은 directory의 inode를 다시 열고, 그 inode를 기반으로 directory를 다시 열게 된다. struct dir도 file과 마찬가지로 같은 inode를 읽더라도 중복으로 생성될 수 있다.
+
+```C
+void
+dir_close (struct dir *dir) 
+{
+  if (dir != NULL)
+    {
+      inode_close (dir->inode);
+      free (dir);
+    }
+}
+```
+열려있는 dir를 닫는 함수로 현재 참고하고 있는 inode를 close 해주고, 이후 free를 통해서 directory를 닫게 된다.
+
+```C
+struct inode *
+dir_get_inode (struct dir *dir) 
+{
+  return dir->inode;
+}
+```
+현재 directory의 inode를 반환하게 된다.
+
+```C
+static bool
+lookup (const struct dir *dir, const char *name,
+        struct dir_entry *ep, off_t *ofsp) 
+{
+  struct dir_entry e;
+  size_t ofs;
+  
+  ASSERT (dir != NULL);
+  ASSERT (name != NULL);
+
+  for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+       ofs += sizeof e) 
+    if (e.in_use && !strcmp (name, e.name)) 
+      {
+        if (ep != NULL)
+          *ep = e;
+        if (ofsp != NULL)
+          *ofsp = ofs;
+        return true;
+      }
+  return false;
+}
+```
+매개변수로 입력받은 현재 dir 내에서 각 dir_entry를 순회하면서 name과 같은 파일이 존재하는지 여부를 반환하는 함수로, 만약 같은 이름을 가진 파일이 dir 내에 존재한다면 해당 dir_entry를 ep에 저장하고, 해당 dir_entry의 Byte offset을 ofsp에 저장하고 ture를 반환하며, 찾지 못한 경우 ep와 ofsp를 모두 무시하면서 false를 반환하게 된다. 
+
+```C
+bool
+dir_lookup (const struct dir *dir, const char *name,
+            struct inode **inode) 
+{
+  struct dir_entry e;
+
+  ASSERT (dir != NULL);
+  ASSERT (name != NULL);
+
+  if (lookup (dir, name, &e, NULL))
+    *inode = inode_open (e.inode_sector);
+  else
+    *inode = NULL;
+
+  return *inode != NULL;
+}
+```
+lookup 함수를 바탕으로 이 함수에서는 같은 기능을 수행하지만 만약 해당 name을 가진 file이 존재할 경우 ture를 반환하게 되고, inode 포인터에 해당 sector의 inode를 open 하여 반환하게 되지만, 찾지 못하게 된 경우에는 null pointer로 저장하며 false를 반환하게 된다.
+
+```C
+bool
+dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
+{
+  struct dir_entry e;
+  off_t ofs;
+  bool success = false;
+
+  ASSERT (dir != NULL);
+  ASSERT (name != NULL);
+
+  if (*name == '\0' || strlen (name) > NAME_MAX)
+    return false;
+
+  if (lookup (dir, name, NULL, NULL))
+    goto done;
+
+  for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+       ofs += sizeof e) 
+    if (!e.in_use)
+      break;
+
+  e.in_use = true;
+  strlcpy (e.name, name, sizeof e.name);
+  e.inode_sector = inode_sector;
+  success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+
+ done:
+  return success;
+}
+```
+이 함수에서는 말 그대로 name을 가진 file을 해당 dir에 추가하는 역할을 수행하는 함수로, 현재 추가하고자 파일의 inode의 sector number를 담고 있는 inode_sector를 입력받는다. 우선 Look 함수를 통해서 같은 name을 가진 file이 존재하는지 여부를 확인하게 되고, 없는 경우에만 추가하게 된다. 만약에 없는 경우에는 inode_read_at을 통해서 해당 Directory의 비어있는 slot을 차례로 찾아 나가게 되는데, 비어있는 슬롯이 없다면 맨 끝에 새로운 슬롯을 만들어 추가하게 된다. for 문에서 EOF 가 도달하거나 끝에 도달했는지 확인하는 방식은 inode_read_at에서 반환하는 Size 값이 어떤지에 따라서 반환하는 값이 달라지게 되는데, 끝에 도달할 경우 size보다 작은 크기를 반환하게 되므로 이를 통해서 비어있는 슬롯이 없는 것을 알 수 있게 된다. 실제 구현 상으로는 for 문의 종료 시 Ofs 가 가리키는 위치가 제일 끝이 될 것이며, for 문을 통해 비어있는 슬롯을 찾는 경우에 해당 자리에 inode_write_at을 통해 e의 내용을 덮어쓰게 되고 성공 여부를 반환하게 된다.
+
+```C
+bool
+dir_remove (struct dir *dir, const char *name) 
+{
+  struct dir_entry e;
+  struct inode *inode = NULL;
+  bool success = false;
+  off_t ofs;
+
+  ASSERT (dir != NULL);
+  ASSERT (name != NULL);
+
+  if (!lookup (dir, name, &e, &ofs))
+    goto done;
+
+  inode = inode_open (e.inode_sector);
+  if (inode == NULL)
+    goto done;
+
+  e.in_use = false;
+  if (inode_write_at (dir->inode, &e, sizeof e, ofs) != sizeof e) 
+    goto done;
+
+  inode_remove (inode);
+  success = true;
+
+ done:
+  inode_close (inode);
+  return success;
+}
+```
+해당 dir 내에 name이라는 이름을 가진 entry를 지우는 연산을 수행하는 함수로 Lookup을 통해 해당 entry 를 찾고, inode를 open하여 열어준 다음, 이 Inode를 기반으로 inode_write_at을 통해서 해당 부분을 덮어쓰고, 이후에 inode를 지우게 된다. 중간 중간에 inode가 NULL 이거나 찾지 못한 경우에는 inode를 닫아주는 연산만 수행하고 성공 여부를 반환하게 된다.
+
+```C
+bool
+dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
+{
+  struct dir_entry e;
+
+  while (inode_read_at (dir->inode, &e, sizeof e, dir->pos) == sizeof e) 
+    {
+      dir->pos += sizeof e;
+      if (e.in_use)
+        {
+          strlcpy (name, e.name, NAME_MAX + 1);
+          return true;
+        } 
+    }
+  return false;
+}
+```
+현재 dir 내의 다음 entry를 읽어오는 연산으로 매개변수로 입력받은 dir를 통해서 다음 entry를 찾아나가는 방식으로 구현되어 있으며 pos를 하나씩 늘리면서 다음 entry 로 넘어가게 되고, 도달하는 entry의 name을 저장하여 반환하게 된다.
+
+#### bitmap.c & bitmap.h
+free-map 을 알아보기 전, free-map 이 구성되어 있는 bitmap 이라는 구조체에 대해서 먼저 잠시 필요한 연산 위주로 알아보고자 한다.
+
+```C
+struct bitmap
+  {
+    size_t bit_cnt;     /* Number of bits. */
+    elem_type *bits;    /* Elements that represent bits. */
+  };
+typedef unsigned long elem_type;
+```
+bitmap 은 말 그대로 여러 bit를 저장하고 있는 struct 로 bit_cnt는 비트의 개수를 저장하고 있으며, bits 는 unsigned long 으로 지정되어 있어서 0 번째 bit 부터 시작하여 bit_cnt 만큼 각 자리가 0 혹은 1을 저장하게 된다.
+
+```C
+void
+bitmap_set_multiple (struct bitmap *b, size_t start, size_t cnt, bool value) 
+{
+  size_t i;
+  
+  ASSERT (b != NULL);
+  ASSERT (start <= b->bit_cnt);
+  ASSERT (start + cnt <= b->bit_cnt);
+
+  for (i = 0; i < cnt; i++)
+    bitmap_set (b, start + i, value);
+}
+```
+start 위치에서 시작하여 Cnt 개수 만큼의 Bit 을 value 로 설정하는 함수이다. bitmap_set은 간략하게 value 가 1이라면 bitmap_mark(특정 Index의 값을 1로 설정하는 함수), 0이라면 bitmap_set(특정 index의 값을 0으로 설정하는 함수)로 이뤄져 있다. 또한, 각 mark와 set 함수는 uniprocessor 에서 atomic 하게 작동하도록 assembly 연산으로 구현되어 있음을 알아두어야 한다. 따라서 bitmap의 값이 이상 없이 잘 관리되도록 한다.
+
+```C
+void
+bitmap_set_all (struct bitmap *b, bool value) 
+{
+  ASSERT (b != NULL);
+
+  bitmap_set_multiple (b, 0, bitmap_size (b), value);
+}
+```
+위에서 설명한 set_multiple 함수를 통해서 전체 bitmap을 value 로 설정하는 함수이다.
+
+```C
+struct bitmap *
+bitmap_create (size_t bit_cnt) 
+{
+  struct bitmap *b = malloc (sizeof *b);
+  if (b != NULL)
+    {
+      b->bit_cnt = bit_cnt;
+      b->bits = malloc (byte_cnt (bit_cnt));
+      if (b->bits != NULL || bit_cnt == 0)
+        {
+          bitmap_set_all (b, false);
+          return b;
+        }
+      free (b);
+    }
+  return NULL;
+}
+```
+bit_cnt 개수만큼의 Bit를 할당할 수 있는 bitmap을 생성하여 반환하는 함수이며, bitmap의 사용을 마친 이후에는 꼭 bitmap_destory를 통해서 할당된 공간을 해제해야 한다.
+
+```C
+size_t
+bitmap_scan_and_flip (struct bitmap *b, size_t start, size_t cnt, bool value)
+{
+  size_t idx = bitmap_scan (b, start, cnt, value);
+  if (idx != BITMAP_ERROR) 
+    bitmap_set_multiple (b, idx, cnt, !value);
+  return idx;
+}
+```
+bitmap b 에서 start에서부터 찾기 시작하여 cnt 개수만큼의 bit가 value 랑 동일할 경우 그 부분 전체를 !value 로 설정하는 함수이다.
+
+```C
+bool
+bitmap_write (const struct bitmap *b, struct file *file)
+{
+  off_t size = byte_cnt (b->bit_cnt);
+  return file_write_at (file, b->bits, size, 0) == size;
+}
+```
+bitmap b 의 내용을 file 에 저장하는 함수이다.
+
+```C
+bool
+bitmap_read (struct bitmap *b, struct file *file) 
+{
+  bool success = true;
+  if (b->bit_cnt > 0) 
+    {
+      off_t size = byte_cnt (b->bit_cnt);
+      success = file_read_at (file, b->bits, size, 0) == size;
+      b->bits[elem_cnt (b->bit_cnt) - 1] &= last_mask (b);
+    }
+  return success;
+}
+```
+
+```C
+size_t
+bitmap_file_size (const struct bitmap *b) 
+{
+  return byte_cnt (b->bit_cnt);
+}
+```
+bitmap 의 크기를 반환하게 되는데, bit_cnt 를 기반으로 사이즈를 계산하여 반환하게 된다.
+
+#### free-map.c & free-map.c 
+위에서 소개한 bitmap을 기반으로 구현된 디스크 블록의 할당과 해제를 관리하게 되는 free map을 알아보고자 한다. Free map을 통해서 각 sector의 할당 여부를 알 수 있게 된다.
+
+```C
+static struct file *free_map_file;   /* Free map file. */
+static struct bitmap *free_map;      /* Free map, one bit per sector. */
+```
+free_map_file은 free_map 자체를 file 로 두고 관리하도록 하는 struct file이며 free_map 이 file 로 관리되어 디스크에 저장되게 된다. free_map 은 Bitmap 으로 선언되어 있어서 사용 여부에 따라서 0 혹은 1로 관리된다.
+
+```C
+void free_map_init (void)
+{
+  free_map = bitmap_create (block_size (fs_device));
+  if (free_map == NULL)
+    PANIC ("bitmap creation failed--file system device is too large");
+  bitmap_mark (free_map, FREE_MAP_SECTOR);
+  bitmap_mark (free_map, ROOT_DIR_SECTOR);
+}
+```
+free_map 을 초기화하는 함수로 위에서 선언한 free_map 에 file system device 가 가진 Block 의 숫자, 즉 전체 file system 의 sector 숫자 만큼을 할당하고 필수적으로 사용되는 free_map 을 저장하기 위한 sector 0 번과, root directory 를 저장하기 위한 섹터 1을 할당하게 marking 하게 된다.
+
+```C
+bool free_map_allocate (size_t cnt, block_sector_t *sectorp)
+{
+  block_sector_t sector = bitmap_scan_and_flip (free_map, 0, cnt, false);
+  if (sector != BITMAP_ERROR
+      && free_map_file != NULL
+      && !bitmap_write (free_map, free_map_file))
+    {
+      bitmap_set_multiple (free_map, sector, cnt, false); 
+      sector = BITMAP_ERROR;
+    }
+  if (sector != BITMAP_ERROR)
+    *sectorp = sector;
+  return sector != BITMAP_ERROR;
+}
+```
+현재 bitmap 에서 cnt 개수만큼 연속되면서 비어있는 sector를 찾아주는 함수로 해당 cnt 개수만큼 비어있는 sector를 찾는다면 그 부분 전체를 true 로 설정하게 되고, 이후에 sectorp 에 연속된 sector의 시작 번호를 반환하게 된다. 만약 오류가 발생한 경우에는 true로 매핑된 부분들을 다시 false로 설정하고 false를 반환하게 된다.
+
+```C
+void free_map_release (block_sector_t sector, size_t cnt)
+{
+  ASSERT (bitmap_all (free_map, sector, cnt));
+  bitmap_set_multiple (free_map, sector, cnt, false);
+  bitmap_write (free_map, free_map_file);
+}
+```
+연산은 bitmap_set_multiple 을 통해 현재 free_map 에서 sector 번호를 시작으로 Cnt 개수만큼을 false 로 설정하고, 이후에 그 free_map을 disk에 기록하게 되는 과정이다.
+
+```C
+void free_map_open (void)
+{
+  free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
+  if (free_map_file == NULL)
+    PANIC ("can't open free map");
+  if (!bitmap_read (free_map, free_map_file))
+    PANIC ("can't read free map");
+}
+```
+이미 FREE_MAP_SECTOR(0) 에 저장되어 있는 free_map 을 읽어와서 free_map_file 에 올려주게 된다. 이후에 free_map_file 을 통해서 free_map 을 읽어오게 된다.
+
+```C
+void free_map_create (void)
+{
+  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map)))
+    PANIC ("free map creation failed");
+
+  free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
+  if (free_map_file == NULL)
+    PANIC ("can't open free map");
+  if (!bitmap_write (free_map, free_map_file))
+    PANIC ("can't write free map");
+}
+```
+새로운 free_map 을 생성하는 함수로 free_map 을 생성하기 위한 inode를 우선적으로 선언하고 해당 Inode를 토대로 bitmap(free_map) 을 free_map_file 에 작성하게 된다.
+
+```C
+void free_map_close (void)
+{
+  file_close (free_map_file);
+}
+```
+file system 종료 시 호출되는 함수로 현재 열려있는 free_map_file을 닫게 된다.
+
+#### block.s & block.c (devices/block)
+전반적인 file system을 알아보기에 앞서서 pintos 에서 데이터를 관리할 때 사용되는 Block system에 대해서 먼저 알아봐야 한다. 파일 시스템이나 swap, Kernel 등을 관리할 때 사용되는 struct로 이제 알아보고자 한다.
+
+```C
+#define BLOCK_SECTOR_SIZE 512
+typedef uint32_t block_sector_t;
+```
+우선 각 block의 sector의 크기는 512 bytes로 지정되어 있으며, sector의 index를 나타내는 데이터 타입인 block_sector_t 는 unsigned int 32 로 이뤄져 있다. 이 type 으로는 약 2 TB 정도의 데이터까지를 할당할 수 있는 index를 저장할 수 있다.
+
+```C
+enum block_type
+  {
+    BLOCK_KERNEL,                /* Pintos OS kernel. */
+    BLOCK_FILESYS,               /* File system. */
+    BLOCK_SCRATCH,               /* Scratch. */
+    BLOCK_SWAP,                  /* Swap. */
+    BLOCK_ROLE_CNT,
+    BLOCK_RAW = BLOCK_ROLE_CNT,  /* "Raw" device with unidentified contents. */
+    BLOCK_FOREIGN,               /* Owned by non-Pintos operating system. */
+    BLOCK_CNT                    /* Number of Pintos block types. */
+  };
+```
+block이 가질 수 있는 type들로 kenel, filesystem, scratch, swap, raw, foreign, cnt 로 나눠져 있다. cnt는 개수를 의미하고 있으며, kernel와 filssys를 제외하고 Scracth 는 임시 저장용 block 이며, raw는 확실하게 지정되지 않은 내용으로 아마 Pintos에서 사용되지 않는 것으로 확인되고 있다. foreign 의 경우에는 pintos가 아닌 다른 OS가 관리하는 block이다.
+
+```C
+struct block
+  {
+    struct list_elem list_elem;         /* Element in all_blocks. */
+
+    char name[16];                      /* Block device name. */
+    enum block_type type;                /* Type of block device. */
+    block_sector_t size;                 /* Size in sectors. */
+
+    const struct block_operations *ops;  /* Driver operations. */
+    void *aux;                          /* Extra data owned by driver. */
+
+    unsigned long long read_cnt;        /* Number of sectors read. */
+    unsigned long long write_cnt;       /* Number of sectors written. */
+  };
+```
+struct block은 list를 위한 list_elem, 이름을 담고 있는 name, block 의 type을 저장하는 type, block이 몇개의 sector 로 저장되어 있는지 크기를 담고 있는 size, block 의 연산자인 ops, 그리고 추가 매개변수로 활용될 수 있는 aux, 현재 읽고 있는 섹터의 개수인 read_cnt, 현재 쓰고 있는 sector의 개수인 write_cnt 로 나눠져 있다.
+
+```C
+static struct list all_blocks = LIST_INITIALIZER (all_blocks);
+static struct block *block_by_role[BLOCK_ROLE_CNT];
+```
+모든 block devices를 list로 만들어 all_blocks에 저장하게 되며, 각 역할에 따른 block을 담기 위해서 block_role 의 개수만큼의 block 을 선언하게 된다.
+
+```C
+struct block * block_get_role (enum block_type role)
+void block_set_role (enum block_type role, struct block *block)
+struct block *block_get_by_name (const char *name);
+```
+위에서 부터 각각 role 에 따라서 block 을 찾거나, 특정 block의 role 을 지정하거나, 특정 이름을 가진 block을 반환하게 되는 함수이다.
+
+```C
+static struct block * list_elem_to_block (struct list_elem *list_elem)
+struct block * block_first (void)
+struct block * block_next (struct block *block)
+```
+all_blocks 를 순회하기 위한 함수로 위에서부터 각각 list_elem 을 입력받아서 block 형태로 반환하는 함수와, all_block 리스트의 첫 번째 원소를 반환하거나, 현재 block 다음 block을 반환하는 함수이다.
+
+```C
+static void check_sector (struct block *block, block_sector_t sector)
+void block_read (struct block *block, block_sector_t sector, void *buffer)
+void block_write (struct block *block, block_sector_t sector, const void *buffer)
+```
+위에서부터 sector 가 valid 한 offset을 지니고 있는지 확인하게 된다. 즉, Block 내에서 매개변수로 입력받은 sector 가 valid 한지 확인하게 되고, 아니라면 panic 하게 된다. 두 번째 함수는 block 에서 특정 sector index 부분을 읽어서 Buffer에 저장하는 함수로 주석에는 함수 내에서 자동으로 동기화가 이뤄지기 때문에 외부에서 Per-block device의 Lock이 필요하지 않다고 명시되어 있으며, read 를 진행하고 read_cnt 를 늘리게 된다. block_write 도 비슷하게 buffer에 있는 내용을 Block의 특정 Sector에 작성하게 되며, buffer의 내용은 무조건 한 sector의 크기와 동일해야 한다. 마찬가지로 Lock 이 따로 필요하지 않다.
+
+```C
+block_sector_t block_size (struct block *block)
+const char * block_name (struct block *block)
+enum block_type block_type (struct block *block)
+void block_print_stats (void)
+```
+위에서부터 각각 Block의 size, name, type, stats 를 출력 혹은 반환하는 함수이다.
+
+```C
+struct block *
+block_register (const char *name, enum block_type type,
+                const char *extra_info, block_sector_t size,
+                const struct block_operations *ops, void *aux)
+{
+  struct block *block = malloc (sizeof *block);
+  if (block == NULL)
+    PANIC ("Failed to allocate memory for block device descriptor");
+
+  list_push_back (&all_blocks, &block->list_elem);
+  strlcpy (block->name, name, sizeof block->name);
+  block->type = type;
+  block->size = size;
+  block->ops = ops;
+  block->aux = aux;
+  block->read_cnt = 0;
+  block->write_cnt = 0;
+
+  printf ("%s: %'"PRDSNu" sectors (", block->name, block->size);
+  print_human_readable_size ((uint64_t) block->size * BLOCK_SECTOR_SIZE);
+  printf (")");
+  if (extra_info != NULL)
+    printf (", %s", extra_info);
+  printf ("\n");
+
+  return block;
+}
+```
+새로운 블록을 등록 사실상 생성하는 함수로 name, type 을 입력받아 설정하고, size 만큼의 sector 개수를 갖게 된다. 또한, 다양한 block type 이 존재하는 만큼 write, read 연산들은 ops 를 통해 입력받고 매개변수 또한 Aux 통해서 입력받도록 block device 을 등록하게 된다.
+
+#### filesys.c & filesys.h 
+이제 inode 부터 시작해서, inode를 통해 구현된 file과 directory를 알아보았으며, 부가적으로 필요한 block system과 bitmap 및 free_map 까지 알아보았으며, 그것들을 기반으로 대체 pintos에서는 어떻게 file system이 구현되어 있어서 초반 pintos-filesys 를 통해 생성한 그 시스템을 운용하는지 알아보고자 한다.
+
+```C
+extern struct block *fs_device;
+```
+우선 filesys.h 에서는 fs_device 를 선언하게 되는데, file system을 위한 struct block 을 선언하고 이를 기반으로 file system 을 구현하게 된다.
+
+```C
+void
+filesys_init (bool format) 
+{
+  fs_device = block_get_role (BLOCK_FILESYS);
+  if (fs_device == NULL)
+    PANIC ("No file system device found, can't initialize file system.");
+
+  inode_init ();
+  free_map_init ();
+
+  if (format) 
+    do_format ();
+
+  free_map_open ();
+}
+```
+filesys_init 을 통해서 위에서 기존에 등록된 block 중에서 Filesys 라는 역할을 가진 Block 을 fs_device로 지정하게 된다. 이후 해당 block 을 가르키기 위한 inode를 init 해주고, 마찬가지로 Sector를 관리하기 위한 free_map 도 init 해주게 된다. 여기서 format 의 경우 pintos -f -q 라는 명령어를 입력하게 될 경우 -f option 이 포함된다면 실행되게 된다.
+
+```C
+static void
+do_format (void)
+{
+  printf ("Formatting file system...");
+  free_map_create ();
+  if (!dir_create (ROOT_DIR_SECTOR, 16))
+    PANIC ("root directory creation failed");
+  free_map_close ();
+  printf ("done.\n");
+}
+```
+말 그대로 현재 block device의 모든 sector를 초기화하는 함수로 전체 sector를 지우는 방식인데, 사실 free_map_create를 현재 Sector의 사용 여부에 관한 데이터를 초기화하는 방식으로 구현되어 있으며, 대신에 root_directory 와 Free_map directory 만 다시 세팅하여 아예 remove 하는 방식이 아닌 보다 간략하게 구현되어 있다.
+
+```C
+void
+filesys_done (void) 
+{
+  free_map_close ();
+}
+```
+file system을 닫을 때 사용되는 함수로 free_mep_close를 통해 현재 디스크에 저장되어 있지 않고, 메모리에만 저장되어 있는 데이터를 디스크에 저장하게 된다.
+
+```C
+bool
+filesys_create (const char *name, off_t initial_size) 
+{
+  block_sector_t inode_sector = 0;
+  struct dir *dir = dir_open_root ();
+  bool success = (dir != NULL
+                  && free_map_allocate (1, &inode_sector)
+                  && inode_create (inode_sector, initial_size)
+                  && dir_add (dir, name, inode_sector));
+  if (!success && inode_sector != 0) 
+    free_map_release (inode_sector, 1);
+  dir_close (dir);
+
+  return success;
+}
+```
+name 이라는 이름을 갖고 Inital_size 만큼의 크기를 갖는 file을 생성하여 현재 block device에 추가하는 함수로, free_map 에서 1개의 연속된 공간, 즉 그냥 추가할 수 있는 공간이 있는지 확인하고 새로운 파일을 가리키는 Inode를 선언하며 이를 directory 에 add 하여 할당하게 된다. 만약 실패한 경우 다시 free_map 을 release하게 된다.
+
+```C
+struct file *
+filesys_open (const char *name)
+{
+  struct dir *dir = dir_open_root ();
+  struct inode *inode = NULL;
+
+  if (dir != NULL)
+    dir_lookup (dir, name, &inode);
+  dir_close (dir);
+
+  return file_open (inode);
+}
+```
+현재 file system 내의 특정 Name 을 가진 파일을 열 때 사용되는 함수로 우선 root directory 부터 열어서 lookup 을 통해서 root directory 내에 해당 name 을 가진 dir_entry 의 존재 여부를 확인하여 inode 에 저장하여 반환하게 된다.
+
+```C
+bool
+filesys_remove (const char *name) 
+{
+  struct dir *dir = dir_open_root ();
+  bool success = dir != NULL && dir_remove (dir, name);
+  dir_close (dir); 
+
+  return success;
+}
+```
+마지막으로 특정 Name 을 가진 file을 지울 때 사용하는 함수로, 마찬가지로 root directory 를 여는 것을 시작으로 특정 dir_entry 를 삭제하게 된다.
+
+#### fsutil.c & fsutil.h
+위의 코드들을 토대로 정의된 file system을 기반으로 하여 실제 pintos에서 사용할 수 있도록 utility 를 정의해놓은 파일들로 ls, cat, rm 등의 명령어가 입력되면 해당 기능을 수행하도록 지정한 함수들이다.
+
+```C
+void
+fsutil_ls (char **argv UNUSED) 
+{
+  struct dir *dir;
+  char name[NAME_MAX + 1];
+  
+  printf ("Files in the root directory:\n");
+  dir = dir_open_root ();
+  if (dir == NULL)
+    PANIC ("root dir open failed");
+  while (dir_readdir (dir, name))
+    printf ("%s\n", name);
+  dir_close (dir);
+  printf ("End of listing.\n");
+}
+```
+subdirectory 가 없으므로, root directory 의 directory 를 받아와서 이를 토대로 while 문을 통해서 파일들의 List를 읽어오게 된다.
+
+```C
+void
+fsutil_cat (char **argv)
+{
+  const char *file_name = argv[1];
+  
+  struct file *file;
+  char *buffer;
+
+  printf ("Printing '%s' to the console...\n", file_name);
+  file = filesys_open (file_name);
+  if (file == NULL)
+    PANIC ("%s: open failed", file_name);
+  buffer = palloc_get_page (PAL_ASSERT);
+  for (;;) 
+    {
+      off_t pos = file_tell (file);
+      off_t n = file_read (file, buffer, PGSIZE);
+      if (n == 0)
+        break;
+
+      hex_dump (pos, buffer, n, true); 
+    }
+  palloc_free_page (buffer);
+  file_close (file);
+}
+```
+hex와 ASCII 코드를 기반으로 ARGV[1] 에 입력된 file_name 을 통해서 file을 찾고 해당 file을 read 해서 파일의 내용을 16진수와 ASCII로 출력하는 함수이다.
+
+```C
+void
+fsutil_rm (char **argv) 
+{
+  const char *file_name = argv[1];
+  
+  printf ("Deleting '%s'...\n", file_name);
+  if (!filesys_remove (file_name))
+    PANIC ("%s: delete failed\n", file_name);
+}
+```
+ARGV[1] 에 입력된 파일 명을 토대로 디렉토리에서 해당 이름을 가진 파일을 지우는 연산을 수행한다.
+
+```C
+void fsutil_extract (char **argv UNUSED) 
+```
+scratch block device에 저장되어 있는 ustar-format tar achive 읽을 때 사용하는 함수로, 정확히는 Pintos block device type으로 extract 하는 함수이다. 우선 block_get_role 을 통해 scrach device를 열고, 해당 device를 통해서 한 block 씩 계속해서 읽어오게 된다. 읽어온 데이터를 기반으로 header 를 통해서 file_name, type, size를 확인하고 이를 바탕으로 각 데이터를 처리하게 된다. 이렇게 처리된 데이터는 filesys_create를 통해서 각 Block을 file system 에 복사하게 된다. 마지막으로 block deivce의 ustar header 첫 2개의 block 을 지워서 함수가 올바르게 수행될 수 잇도록 하며, end-of-archive marker를 남기는 것으로 마무리된다.
+
+```C
+void fsutil_append (char **argv)
+```
+fsutil_append 는 정반대로 작동하며 현재 file system 에 저장되어 있는 file을 ustar-format 으로 변경하여 scratch device에 append 하게 된다. 이 경우에도 마찬가지로 순서대로 append 해주고, 마지막에는 항상 marker를 남기게 된다. 우선 특정 sector 부터 buffer를 할당하게 된다. filesys_open으로 옮기고자 하는 파일을 일고, sratch_device도 열어주게 된다. 이후에 ustar-format header를 직접 생성하여 file_name, type, size를 기반으로 header를 생성하여 buffer에 저장하게 되고, 이후 이 Buffer에 저장된 Header를 sector에 하나씩 넘겨가면서 저장하게 된다. 마찬가지로 이 경우에도 0 BLock 을 2개를 할당하여 종료를 표시하게 된다.
+
+#### summary of file system
+우선 굉장히 많은 file system의 구현에 대해서 살펴보았다. 실제 초반에 pintos document에 있던 limitation들과 연관지어서 다시 정리해보자면, block device의 구현 부분을 봐서 알겠지만, 주석에는 internal sync 가 있다고는 했지만 실제 구현 상 internal sync가 완벽하지 않으므로, concurrent access 시에 방해가 발생할 수 있다는 것을 알 수 있었으며, file size 또한 growth 연산이 정의되어 있지 않기에 생성 시 정해진다는 것 또한 알 수 있었다. 이외에도 root directory 에서 바로 찾아나가는 것처럼 sub directory 로 구현되어 있지 않고, 각 연산 혹은 함수 실행 중간에 문제가 발생할 시 절대 복구할 수 없는 것처럼 보인다. 마지막으로 filesys_remove() 의 구현에서 지우더라도 접근이 가능하다는 것은 바로 inode부터 본다면 inode_remove 에서는 직접 지우는 것이 아닌 Flag 만 설정하게 되고, 마지막으로 읽고 있는 곳에서 inode_close를 실행했을 경우에만 free 해준다. 즉, 읽고 있는 경우에는 곧바로 지워지지 않고 남아있게 되며, 이는 마지막 프로세스가 다 읽을 때 까지 유지된다는 것을 구현을 통해서 함께 알 수 있다.
+
+#### brief analysis of pintos-mkdisk
+위의 pintos document 에서 초기에 file system을 저장하기 위한 가상의 system 을 지정하기 위해서 pintos-mkdisk 를 통해서 2 MB 의 가상 디스크를 생성하는데 해당 과정을 간략하게 살펴보고자 한다. pintos-mkdir 는 말 그대로 가상 디스크를 생성하고 설정하는 과정으로 디스크 파일을 생성하고, 파티션을 나누며, 부트로더 까지 포함할 수 있도록 구현되어 있다.
+
+```perl
+BEGIN { my $self = $0; $self =~ s%/+[^/]*$%%; require "$self/Pintos.pm"; }
+our ($disk_fn);            # Output disk file name.
+our (%parts);              # Partitions.
+our ($format);             # "partitioned" (default) or "raw"
+our (%geometry);           # IDE disk geometry.
+our ($align);              # Align partitions on cylinders?
+our ($loader_fn);          # File name of loader.
+our ($include_loader);     # Include loader?
+our (@kernel_args);        # Kernel arguments.
+```
+첫 줄의 경우 perl 모듈을 불러오는 과정을 통해서 pintos 에서 사용될 함수들을 불러오게 되며, 밑의 Our 의 경우 전역변수를 선언하게 된다.
+
+``` perl
+if (grep ($_ eq '--', @ARGV)) {
+    @kernel_args = @ARGV;
+    @ARGV = ();
+    while ((my $arg = shift (@kernel_args)) ne '--') {
+	push (@ARGV, $arg);
+    }
+}
+GetOptions ("h|help" => sub { usage (0); }, ... )
+  or exit 1;
+usage (1) if @ARGV != 1;
+```
+입력받은 argument 를 Parsing 하는 부분으로 kernel_args에 저장하게 되고, 각 option 별 sub routine을 지정하게 된다.
+
+```perl
+$disk_fn = $ARGV[0];
+die "$disk_fn: already exists\n" if -e $disk_fn;
+
+# Open disk.
+my ($disk_handle);
+open ($disk_handle, '>', $disk_fn) or die "$disk_fn: create: $!\n";
+```
+첫 번째 argument로 입력받은 부분인 $ARGV[0] 을 disk_fn 에 저장하여 disk_fn 이라는 이름을 가진 disk 를 생성하게 된다.
+
+```perl
+# Sets the loader to copy to the MBR.
+sub set_loader {
+    die "can't specify both --loader and --no-loader\n"
+      if defined ($include_loader) && !$include_loader;
+    $include_loader = 1;
+    $loader_fn = $_[1] if $_[1] ne '';
+}
+
+# Disables copying a loader to the MBR.
+sub set_no_loader {
+    die "can't specify both --loader and --no-loader\n"
+      if defined ($include_loader) && $include_loader;
+    $include_loader = 0;
+}
+
+# Figure out whether to include a loader.
+$include_loader = exists ($parts{KERNEL}) && $format eq 'partitioned'
+  if !defined ($include_loader);
+die "can't write loader to raw disk\n" if $include_loader && $format eq 'raw';
+die "can't write command-line arguments without --loader or --kernel\n"
+  if @kernel_args && !$include_loader;
+print STDERR "warning: --loader only makes sense without --kernel "
+  . "if this disk will be used to load a kernel from another disk\n"
+  if $include_loader && !exists ($parts{KERNEL});
+```
+각 함수는 boot loader와 관련된 함수로 set_loader의 경우 boot loader의 포함 여부를 설정하게 되며, set_no_loader 함수의 경우 Boot loader를 포함하지 않도록 설정하게 된다.
+
+```perl
+# Read loader.
+my ($loader);
+$loader = read_loader ($loader_fn) if $include_loader;
+
+# Write disk.
+my (%disk) = %parts;
+$disk{DISK} = $disk_fn;
+$disk{HANDLE} = $disk_handle;
+$disk{ALIGN} = $align;
+$disk{GEOMETRY} = %geometry;
+$disk{FORMAT} = $format;
+$disk{LOADER} = $loader;
+$disk{ARGS} = \@kernel_args;
+assemble_disk (%disk);
+
+# Done.
+exit 0;
+```
+마지막으로 %disk 에 각 데이터를 저장하게 되며, assemble_disk 함수를 통해서 실제 disk 를 생성하는 것으로 실행을 마무리하게 된다.
+
+### Install User Program in Pintos
+위의 과정들을 통해서 Pintos 내에서 간단하게나마 어떻게 File system이 구현되었는지 알 수 있었고, 어떻게 관리되고 있는지도 알 수 있었다. 다시 pintos 문서로 돌아가면 pintos-mkdisk 를 통해 가상의 디스크가 생성되는 것 까지는 이해를 할 수 있었지만, 그 다음 명령어인 pintos -f -p 는 어떻게 실행되는지 아직 모르고 있는 상황이다. pintos 가 실행되고 어떻게 argument 가 전달되어 실행되는지 일련으 과정을 알아보면서 어떻게 file system에서 formatting 과 copy 등등이 실행될 수 있는지의 과정을 함께 살펴보고자 한다.
+
+#### init.c
+```C
+int
+main (void)
+{
+  char **argv;
+
+  argv = read_command_line ();
+  argv = parse_options (argv);
+
+#ifdef USERPROG
+  tss_init ();
+  gdt_init ();
+#endif
+
+  ...
+
+#ifdef USERPROG
+  exception_init ();
+  syscall_init ();
+#endif
+
+  ...
+
+#ifdef FILESYS
+  ide_init ();
+  locate_block_devices ();
+  filesys_init (format_filesys);
+#endif
+
+  ...
+
+  run_actions (argv);
+  
+  ...
+}
+```
+pintos가 부팅되는 과정을 아주 간단하게 요약하자면, perl로 구현되어 있는 pintos가 실행되면서 find_disks() 를 통해 디스크에서 커널을 찾고 초기 설정을 하게 되고, 이후에 loader.S 로 넘어가 실행을 이어가게 된다. find_disks() 내에서 kernel_args를 넘겨받아 args에 저장하게 되고, 이후 디스크로 넘겨주게 되면서 loader.S를 실행하고, 이후 차례로 Start.S 로 넘어가 실행하게 되면서 call main 을 통해 드디어 init.c 의 main () 함수를 실행하게 된다. 우선 여기서 argv 에는 disk 에 넣었던 kernel_agrs 들이 저장되어 있게 되며 read_command_line() 과 parse_options() 를 통해 실행을 이어가게 된다.
+
+```C
+static char **
+read_command_line (void) 
+{
+  static char *argv[LOADER_ARGS_LEN / 2 + 1];
+  char *p, *end;
+  int argc;
+  int i;
+
+  argc = *(uint32_t *) ptov (LOADER_ARG_CNT);
+  p = ptov (LOADER_ARGS);
+  end = p + LOADER_ARGS_LEN;
+  for (i = 0; i < argc; i++) 
+    {
+      if (p >= end)
+        PANIC ("command line arguments overflow");
+
+      argv[i] = p;
+      p += strnlen (p, end - p) + 1;
+    }
+  argv[argc] = NULL;
+
+  /* Print kernel command line. */
+  printf ("Kernel command line:");
+  for (i = 0; i < argc; i++)
+    if (strchr (argv[i], ' ') == NULL)
+      printf (" %s", argv[i]);
+    else
+      printf (" '%s'", argv[i]);
+  printf ("\n");
+
+  return argv;
+}
+```
+kernel command line을 입력받아서 이를 word로 나누고 words를 argv 처럼 나눠서 array 형태로 반환하게 되는 과정으로 이루어져 있다. 이때 ptov 는 physical 주소를 가상 주소로 바꿔주는 함수로 loader.h 에 저장되어 있는 LOADER_ARGS를 바탕으로 virtual address 로 변경하여 반환하게 된다. 즉 argument 들은 실제 disk 즉, physical memory 상에 저장되어 있는데 이를 읽어오기 위해서는 virtual address 를 통해서 읽어올 필요성이 있다. 따라서 virtual address 로 변환하는 과정을 거친 이후에 command line 에 포함된 argument 의 개수를 세고 각 Word 로 나눠서 연산을 수행하여 각 agrument를 array 형태로 저장하여 반환하게 된다.
+
+```C
+static char **
+parse_options (char **argv) 
+{
+  for (; *argv != NULL && **argv == '-'; argv++)
+    {
+      char *save_ptr;
+      char *name = strtok_r (*argv, "=", &save_ptr);
+      char *value = strtok_r (NULL, "", &save_ptr);
+      
+      if (!strcmp (name, "-h"))
+        usage ();
+      else if (!strcmp (name, "-q"))
+        shutdown_configure (SHUTDOWN_POWER_OFF);
+      else if (!strcmp (name, "-r"))
+        shutdown_configure (SHUTDOWN_REBOOT);
+#ifdef FILESYS
+      else if (!strcmp (name, "-f"))
+        format_filesys = true;
+      else if (!strcmp (name, "-filesys"))
+        filesys_bdev_name = value;
+      else if (!strcmp (name, "-scratch"))
+        scratch_bdev_name = value;
+#ifdef VM
+      else if (!strcmp (name, "-swap"))
+        swap_bdev_name = value;
+#endif
+#endif
+      else if (!strcmp (name, "-rs"))
+        random_init (atoi (value));
+      else if (!strcmp (name, "-mlfqs"))
+        thread_mlfqs = true;
+#ifdef USERPROG
+      else if (!strcmp (name, "-ul"))
+        user_page_limit = atoi (value);
+#endif
+      else
+        PANIC ("unknown option `%s' (use -h for help)", name);
+    }
+  random_init (rtc_get_time ());
+  
+  return argv;
+}
+```
+위에서 virtual address로 변환하여 array 형태로 저장된 arguments 를 받아와서 이를 토대로 각 Option 별로 할당을 진행하게 된다. 우선 for 문으로 반복하여 -로 시작하는 argument 일 경우 -option=value 형태이므로 option, value를 각각 분할하여 연산을 수행하게 된다. Strcmp 함수를 통해 Option 을 확인하여 해당하는 option 일 경우 flag를 설정하거나 value에 맞게 값을 설정하게 된다. 각 옵션별로 간단히 다음과 같은 연산을 수행한다. -h (도움말 출력), -q (커널 종료 시 전원 끄기), -r (커널 종료 시 재부팅), -f (파일 시스템 포맷), -filesys / -scratch (file system과 scractch disk의 block device의 name 설정), -swap (swap block device 이름 설정), -rs (random number generator 초기화), -mlfqs (multi-level feedback queue scheduling), -ul (user grogram 의 page limit을 설정) 해주게 된다. 이후 -rs 옵션이 설정된 경우 value로 seed를 초기화해주지만 -rs 가 설정되지 않은 경우 rtc_get_time 을 통해서 Seed를 설정하게 된다.
+
+```C
+static void
+run_actions (char **argv) 
+{
+  /* An action. */
+  struct action 
+    {
+      char *name;                       /* Action name. */
+      int argc;                         /* # of args, including action name. */
+      void (*function) (char **argv);   /* Function to execute action. */
+    };
+
+  /* Table of supported actions. */
+  static const struct action actions[] = 
+    {
+      {"run", 2, run_task},
+#ifdef FILESYS
+      {"ls", 1, fsutil_ls},
+      {"cat", 2, fsutil_cat},
+      {"rm", 2, fsutil_rm},
+      {"extract", 1, fsutil_extract},
+      {"append", 2, fsutil_append},
+#endif
+      {NULL, 0, NULL},
+    };
+
+  while (*argv != NULL)
+    {
+      const struct action *a;
+      int i;
+
+      /* Find action name. */
+      for (a = actions; ; a++)
+        if (a->name == NULL)
+          PANIC ("unknown action `%s' (use -h for help)", *argv);
+        else if (!strcmp (*argv, a->name))
+          break;
+
+      /* Check for required arguments. */
+      for (i = 1; i < a->argc; i++)
+        if (argv[i] == NULL)
+          PANIC ("action `%s' requires %d argument(s)", *argv, a->argc - 1);
+
+      /* Invoke action and advance. */
+      a->function (argv);
+      argv += a->argc;
+    }
+}
+```
+우선 struct action 을 선언하여 각 action의 name, argc (argument 개수), funcion (실행할 함수)를 저장하게 되며, 각 action 을 지정하여 실행하게 된다. 이를 바탕으로 actions 배열을 선언하였는데, 각 name 에 해당하는 action 을 실행하기 위한 argument 의 개수와 실행할 함수를 선언하게 되어있다. 특정 user program 을 실행할 때 사용하는 run 명령어의 경우 run 을 포함하여 한 개 즉, 실행할 program의 이름이 필요하고, 이는 run_task 에 전달되어 실행되는 것을 알 수 있으며, 앞서 알아봤던 file system을 관리하기 위한 ls, cat, rm, extract, append가 모두 fsutil_ls, fsutil_cat, fsutil_rm, fsutil_extract, fsutil_append 을 통해 실행되는 것을 알 수 있었다. 이후에 while 문을 통해서 계속 argv를 순회하면서 action 과 argument 를 짝으로 맞춰서 실행을 반복해서 모든 argument 가 처리될 때 까지 실행을 반복하게 된다.
+
+```C
+static void
+run_task (char **argv)
+{
+  const char *task = argv[1];
+  
+  printf ("Executing '%s':\n", task);
+#ifdef USERPROG
+  process_wait (process_execute (task));
+#else
+  run_test (task);
+#endif
+  printf ("Execution of '%s' complete.\n", task);
+}
+```
+run_task 는 위에서 인자가 2개가 필요하다고 했으므로, argv[1] 에 저장된 인자를 바탕으로 task 의 이름을 불러오게 된다. 시작하기 이전에 task 의 이름을 출력하고 시작하게 된다. 이후 USERPROG context 내에서 실행되는 경우 Process_wait (process_execute (task)) 를 통해 실행을 시작하게 된다. process_execute (task) 를 통해 task 를 실행하게 되고, wait 함수가 실행이 종료될 때까지 기다리도록 작동하게 된다. userprog가 아닐 시 run_test를 통해서 테스트 용도로 작업을 실행하게 되며, 작업이 완료된다면 Printf를 통해서 실행된 task 를 출력하고 마무리하게 된다. 
+
+```C
+static void
+locate_block_devices (void)
+{
+  locate_block_device (BLOCK_FILESYS, filesys_bdev_name);
+  locate_block_device (BLOCK_SCRATCH, scratch_bdev_name);
+#ifdef VM
+  locate_block_device (BLOCK_SWAP, swap_bdev_name);
+#endif
+}
+```
+locate_block_device는 file system 을 위한 block device를 할당하고, 이후 scratch 를 위한 block device를 할당하게 되는 과정으로 실행된다. 즉, 특정 role에 맞는 device에 Name을 알맞게 부여하거나 혹은 이름에 맞는 block device를 찾아서 해당 역할을 부여하게 된다.
+
+```C
+static void
+locate_block_device (enum block_type role, const char *name)
+{
+  struct block *block = NULL;
+
+  if (name != NULL)
+    {
+      block = block_get_by_name (name);
+      if (block == NULL)
+        PANIC ("No such block device \"%s\"", name);
+    }
+  else
+    {
+      for (block = block_first (); block != NULL; block = block_next (block))
+        if (block_type (block) == role)
+          break;
+    }
+
+  if (block != NULL)
+    {
+      printf ("%s: using %s\n", block_type_name (role), block_name (block));
+      block_set_role (role, block);
+    }
+}
+```
+특정 role 에 맞는 block device를 찾아서 반환하는 함수로 이름이 같은 block 을 찾거나 role 에 맞는 block 중에 가장 첫 번째로 찾은 block 을 반환하게 된다. 우선 이름이 같은 것을 찾았다면 그걸 반환하게 되고, 만약 이름이 입력되지 않은 경우에는 block list에서 같은 role을 지니고 있는 block 을 반환하게 된다. 반약 블록을 찾았다면 prinf 를 통해서 state를 출력하고, set_role을 통해서 찾은 block 에 role을 부여하게 된다.
+
+*** IDE and ide_init ***
+```C
+void ide_init (void) 
+```
+main() 에 사용된 다른 한 함수는 ide_init 이다. 해당 함수는 integrated drive electronics 즉 IDE disk를 초기화하는 함수로 IDE disk device를 사용하게 하는 함수이다. 우선적으로 Advanced Technology Attachment 를 초기화하여 PINTOS가 File system을 지원하게 된다. IDE는 disk 와 CPU 사이의 Interface 로 ide_init 함수 내에서는 ATA 를 세팅하기 위한 인터페이스이다. 우선 IDE는 총 2개의 primary와 secondary channel 로 나뉘게 되는데 각 채널별로 Master-Slave를 이루게 된다. 우선 각 Channel을 reset하여 interrupt와 Register를 설정하게 된다. 다음으로 각 channel 에 연결되어 있는 disk 를 초기화하며 마찬가지로 새롭게 Name과 number를 설정하게 된다. 이후에 interrupt handler를 추가하고 channel을 초기화하게 된다. 이를 통해서 ATA 를 활용할 수 있도록 disk 를 설정하게 된다.
+
+#### process.c & process.h
+이전 main()에서 run_task가 실행되는 과정에서 실행의 흐름을 따라가면서 run_task 에서 실행된 Process_execute 가 어떻게 실행이 되는지 이어서 살펴보고자 한다.
+
+```C
+tid_t
+process_execute (const char *file_name) 
+{
+  char *fn_copy;
+  tid_t tid;
+
+  fn_copy = palloc_get_page (0);
+  if (fn_copy == NULL)
+    return TID_ERROR;
+  strlcpy (fn_copy, file_name, PGSIZE);
+
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  if (tid == TID_ERROR)
+    palloc_free_page (fn_copy); 
+  return tid;
+}
+```
+file_name 을 입력으로 받아 어떻게 해당 user program 을 실행하게 되는지 살펴보자. 우선 새로운 thread를 실행하게 되는데 thread의 이름을 file_name으로 설정했으며, start_process 를 실행시키도록 thread를 생성하게 된다. process_execute 함수 내에서 thread를 생성하는 것이므로, process_execute 가 종료되기 전에 이미 해당 thread가 스케쥴되어 실행될 수 있거나 혹은 아예 exit 까지도 수행되고 나서 return tid로 종료될 수 있는 가능성이 존재한다. 그렇지만 반환은 일단 새로 생성한 tid를 반환하게 된다. 조금 더 구체적으로 살펴보면 file_name 이라는 변수를 아예 fn_copy라는 변수에 아예 복사를 하게 되는데 caller 즉 현재 함수랑 이후 실행될 load() 에서 동시에 file_name 을 참고하게 되는데 이러면 Race condition 에 빠질 수 있으므로 복사를 하고 실행하게 된다.
+
+```C
+static void
+start_process (void *file_name_)
+{
+  char *file_name = file_name_;
+  struct intr_frame if_;
+  bool success;
+
+  memset (&if_, 0, sizeof if_);
+  if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
+  if_.cs = SEL_UCSEG;
+  if_.eflags = FLAG_IF | FLAG_MBS;
+  success = load (file_name, &if_.eip, &if_.esp);
+
+  palloc_free_page (file_name);
+  if (!success) 
+    thread_exit ();
+
+  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+  NOT_REACHED ();
+}
+```
+위에서 정의된 thread 함수인데, 새로운 user program 을 load하고 실행하는 과정을 수행하는 함수이다. 하나씩 살펴보자면 위에서 fn_copy 를 통해 복사한 입력인 file_name_을 입력받게 된다. 우선, intr_frame if_ 를 초기화하고, 각 register인 gs, fs, es, ds, ss 를 SEL_UDSEG로 설정하여 user code 가 접근하는 공간으로 설정하게 된다. 마찬가지로 cs 또한 UCSEG로 설정하여 사용자 코드가 실행되도록 한다. 이후 인터럽트 활성화를 위한 FLAG_IF와 MBS 를 설정하고 load 함수를 통해서 user program 을 memeory 로 load 하고 eip 에 user program 이 실행될 주소와 esp 에 stack pointer를 지정하며 실행을 시작할 준비를 마치게 된다. 준비가 완료되었다면 마지막 어셈블리 루틴을 잘 확인해야 하는데, 마치 인터럽트에서 반환된 것처럼 User program 을 실행하게 된다. 우선 intf_frame에 무언가가 들어있는 척 movl %0, %%esp 를 통해서 esp 를 &if_ 로 설정하고, 이후 jmp intr_exit 를 통해 if_.eip 로 넘어가면서 실행을 시작하게 되고, 아예 그 밑인 NOT_REACHED로는 도달하지 않게 된다.
+
+```C
+int
+process_wait (tid_t child_tid UNUSED) 
+{
+  return -1;
+}
+```
+아직 구현되어 있지 않은 상황이지만, 실제 구현 시에는 자식 thread가 종료될 때까지 기다린 뒤에 자식 thread가 종료되는 상태를 반환하게 되는 것이 핵심이다. 만약 강제로 종료된 경우거나 중복 호출, 혹은 문제가 있는 경우에는 -1을 반환하게 되며 부모 -자식 관계가 아닌 경우나 유효하지 않은 TID 인 경우 등을 포함한다. 
+
+```C
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      cur->pagedir = NULL;
+      pagedir_activate (NULL);
+      pagedir_destroy (pd);
+    }
+}
+```
+현재 실행되고 있는 프로세스를 종료하고 할당된 resources 를 해제하게 된다. current process의 page directory를 지우게 되면서 kernel-only page directory 로 전환하게 되면서 user program을 위한 page directory 를 삭제하게 된다. 해당 과정은 우선 cur_pagedir 를 NULL로 바꿔주는데 이를 통해서 timer interrupt 발생 시에도 process의 page directory 로 돌아오지 못하도록 한다. 또한, padedir_activate 를 통해서 kernel-only page directory를 Activate 한 뒤에야 current process의 page directory를 destroy 하게 되는 순서로 구현해야 하며 그렇게 구현되어 있다. 순서가 바뀌게 된다면, 자꾸만 User program 의 Page directory를 activate 하게 되거나, 이미 지워진 directory 를 읽게 되는 문제가 발생할 수 있다. 
+
+```C
+void
+process_activate (void)
+{
+  struct thread *t = thread_current ();
+
+  pagedir_activate (t->pagedir);
+
+  tss_update ();
+}
+```
+현재 실행되는 current thread에 맞춰서 CPU 가 실행될 수 있도록 설정해주는 함수로 context_switch 가 발생할 때마다 실행하게 된다. 우선 Pagedir_activate 를 통해서 현재 thread의 Pade table을 활성화하게 된다. 이후 Task State Segment 도 업데이트를 통해서 interrupt context 상에서 활용할 TSS 를 준비하게 된다. 
+
+```C
+typedef uint32_t Elf32_Word, Elf32_Addr, Elf32_Off;
+typedef uint16_t Elf32_Half;
+#define PE32Wx PRIx32   /* Print Elf32_Word in hexadecimal. */
+#define PE32Ax PRIx32   /* Print Elf32_Addr in hexadecimal. */
+#define PE32Ox PRIx32   /* Print Elf32_Off in hexadecimal. */
+#define PE32Hx PRIx16   /* Print Elf32_Half in hexadecimal. */
+struct Elf32_Ehdr
+  {
+    unsigned char e_ident[16];
+    Elf32_Half    e_type;
+    Elf32_Half    e_machine;
+    Elf32_Word    e_version;
+    Elf32_Addr    e_entry;
+    Elf32_Off     e_phoff;
+    Elf32_Off     e_shoff;
+    Elf32_Word    e_flags;
+    Elf32_Half    e_ehsize;
+    Elf32_Half    e_phentsize;
+    Elf32_Half    e_phnum;
+    Elf32_Half    e_shentsize;
+    Elf32_Half    e_shnum;
+    Elf32_Half    e_shstrndx;
+  };
+struct Elf32_Phdr
+  {
+    Elf32_Word p_type;
+    Elf32_Off  p_offset;
+    Elf32_Addr p_vaddr;
+    Elf32_Addr p_paddr;
+    Elf32_Word p_filesz;
+    Elf32_Word p_memsz;
+    Elf32_Word p_flags;
+    Elf32_Word p_align;
+  };
+#define PT_NULL    0            /* Ignore. */
+#define PT_LOAD    1            /* Loadable segment. */
+#define PT_DYNAMIC 2            /* Dynamic linking info. */
+#define PT_INTERP  3            /* Name of dynamic loader. */
+#define PT_NOTE    4            /* Auxiliary info. */
+#define PT_SHLIB   5            /* Reserved. */
+#define PT_PHDR    6            /* Program header table. */
+#define PT_STACK   0x6474e551   /* Stack segment. */
+#define PF_X 1          /* Executable. */
+#define PF_W 2          /* Writable. */
+#define PF_R 4          /* Readable. */
+```
+이제 Load 가 어떻게 구현이 되어 실행되는지 확인하기 이전에 우선 ELF 에 대해서 먼저 확인을 해야한다. ELF 란 Executable and Linkable Format Binary 를 Load하기 위한 파일 형식을 담고 있다. 대부분 ELF1 에 포함된 정의들이고 위에서부터 확인해보도록 하자. Elf32_word, Addr, Off 는 각각 ELF 에서 사용되는 32비트 정수형 데이터셋이고 Half는 16비트 정수형 데이터셋이다. 또한, printf를 위해서 ELF의 출력을 위한 정의로 hexadecimal로 출력하기 위한 데이터 타입을 담고 있다. 그 다음에 등장하는 Elf32_Ehdr는 ELF 파일의 가장 처음에 위치하는 데이터를 표현하기 위한 struct로 ELF 의 가장 처음에 존재하는 파일로 ELF 파일의 정보를 담고 있는 Struct 이다. Elf32_Phdr은 ELF의 헤더를 표현하기 위한 struct 로 파일의 e_phoff 에서 시작하여 e_phnum 개수 만큼의 header가 존재한다. 마지막으로 p_type 은 각각 LOAD 여부, DYNAMIC 여부, 등등을 나타내기 위해 정의되었으며, p_flags는 권한 XWR을 지정하기 위한 flag 로 작동한다.
+
+```C
+bool
+load (const char *file_name, void (**eip) (void), void **esp) 
+{
+  struct thread *t = thread_current ();
+  struct Elf32_Ehdr ehdr;
+  struct file *file = NULL;
+  off_t file_ofs;
+  bool success = false;
+  int i;
+
+  t->pagedir = pagedir_create ();
+  if (t->pagedir == NULL) 
+    goto done;
+  process_activate ();
+
+  file = filesys_open (file_name);
+  if (file == NULL) 
+    {
+      printf ("load: %s: open failed\n", file_name);
+      goto done; 
+    }
+
+  if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
+      || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
+      || ehdr.e_type != 2
+      || ehdr.e_machine != 3
+      || ehdr.e_version != 1
+      || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
+      || ehdr.e_phnum > 1024) 
+    {
+      printf ("load: %s: error loading executable\n", file_name);
+      goto done; 
+    }
+
+  file_ofs = ehdr.e_phoff;
+  for (i = 0; i < ehdr.e_phnum; i++) 
+    {
+      struct Elf32_Phdr phdr;
+
+      if (file_ofs < 0 || file_ofs > file_length (file))
+        goto done;
+      file_seek (file, file_ofs);
+
+      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+        goto done;
+      file_ofs += sizeof phdr;
+      switch (phdr.p_type) 
+        {
+        case PT_NULL:
+        case PT_NOTE:
+        case PT_PHDR:
+        case PT_STACK:
+        default:
+          break;
+        case PT_DYNAMIC:
+        case PT_INTERP:
+        case PT_SHLIB:
+          goto done;
+        case PT_LOAD:
+          if (validate_segment (&phdr, file)) 
+            {
+              bool writable = (phdr.p_flags & PF_W) != 0;
+              uint32_t file_page = phdr.p_offset & ~PGMASK;
+              uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
+              uint32_t page_offset = phdr.p_vaddr & PGMASK;
+              uint32_t read_bytes, zero_bytes;
+              if (phdr.p_filesz > 0)
+                {
+                  read_bytes = page_offset + phdr.p_filesz;
+                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
+                                - read_bytes);
+                }
+              else 
+                {
+                  read_bytes = 0;
+                  zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
+                }
+              if (!load_segment (file, file_page, (void *) mem_page,
+                                 read_bytes, zero_bytes, writable))
+                goto done;
+            }
+          else
+            goto done;
+          break;
+        }
+    }
+
+  if (!setup_stack (esp))
+    goto done;
+
+  *eip = (void (*) (void)) ehdr.e_entry;
+
+  success = true;
+
+ done:
+  file_close (file);
+  return success;
+}
+```
+이제 위에서 정의된 ELF 타입들을 통해서 ELF file 을 Load하여 thread에 직접 Load하고 실행할 수 있도록 초기화하는 역할을 담당한다. 크게 보면 memory 에 Load한 ELF file 의 Start address를 eip 에 지정하고, 마찬가지로 Stack pointer를 esp 에 지정하도록 한다. 구체적으로 살펴보면, 현재 thread t 와 ehdr (ELF header), file (ELF header 를 file 에 저장하기 위한 변수) 를 우선 선언하게 된다. 이후 thread t 가 실행되기 위한 padedir 을 할당하게 되고, process_activate 를 통해서 pagedir 를 이용할 수 있도록 한다. 즉 각 process 마다 다른 address space를 할당하게 되고, 이후 ELF file 을 드디어 읽어오게 된다. file system device를 통해서 해당 file name을 가진 file을 읽어와서 file_read 함수를 통해 해당 파일을 확인하게 된다. 이 과정 중에서 ehdr 에 header의 내용을 저장하고, ELF 파일 형식과 실행 파일 등을 조건에 맞게 확인하게 된다. 이후 program header를 file_ofs에 저장하고 각 header를 for 문에서 순회하면서 E_phnum 개수만큼 확인하게 된다. 이 때 file_seek 를 통해서 다시 Pos 를 조정하고 다시 file_read 로 읽고를 반복하면서 각 header를 전부 읽는다. 이 때 읽어온 header를 기존에 정의된 enum 에 따라서 이 중 PT_LOAD 의 경우 load 가 가능하므로 이 경우에만 드디어 데이터를 읽어오게 된다. 이후 file 에서 데이터를 읽고, 남은 영역에 대해서는 zero 로 덮어쓰게 된다. 또한, Load_segment 함수를 통해서 file data를 laod 한 뒤에 mem_page를 zero 로 덮어쓰게 된다. 마지막으로 setup_stack 을 통해 stack 을 설정하고 eip 를 ehdr.e_entry 로 start address를 할당하면서 마무리하게 된다. 이제 Load 에서 사용된 세부 함수들을 몇 가지 더 살펴보고자 한다.
+
+```C
+static bool validate_segment (const struct Elf32_Phdr *phdr, struct file *file) 
+```
+phdr 이 valid 한지 여부를 확인하는 함수로, loadable segment 가 file 내에 존재하는지 확인하고 문제가 없으면서 존재하는 경우에만 true를 반환한다.
+
+```C
+static bool
+load_segment (struct file *file, off_t ofs, uint8_t *upage,
+              uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+{
+  ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+  ASSERT (pg_ofs (upage) == 0);
+  ASSERT (ofs % PGSIZE == 0);
+
+  file_seek (file, ofs);
+  while (read_bytes > 0 || zero_bytes > 0) 
+    {
+      size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+      size_t page_zero_bytes = PGSIZE - page_read_bytes;
+
+      uint8_t *kpage = palloc_get_page (PAL_USER);
+      if (kpage == NULL)
+        return false;
+
+      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+        {
+          palloc_free_page (kpage);
+          return false; 
+        }
+      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+
+      if (!install_page (upage, kpage, writable)) 
+        {
+          palloc_free_page (kpage);
+          return false; 
+        }
+
+      read_bytes -= page_read_bytes;
+      zero_bytes -= page_zero_bytes;
+      upage += PGSIZE;
+    }
+  return true;
+}
+```
+load 에서 PT_LOAD 인 경우에만 Load를 하게 되었는데 이 때 사용하던 함수가 바로 load_segment 이다. 우선 file의 특정 위치인 offset에서부터 READ_BYTES만큼 read 하여 current processor의 virtual address space 에 Load 하는 역할을 담당하고 있다. 즉, READ_BYTES 부분 만큼은 읽어오게 되고, 나머지 ZERO_BYTES 부분에서 0으로 초기화를 진행하게 된다. 또한, file_seek를 통해서 pos 를 ofs 로 바꿔줘 다시 해당 offset 부터 읽어올 수 있도록 한다. 각 page 별로 read_bytes와 zero_bytes를 지정하여 남은 공간에는 0으로 초기화하도록 작동한다. 이 때 각 페이지를 읽어올 때마다 Kpage라는 변수에 새로운 페이지를 palloc 하고 이 페이지에 읽어온 데이터와 zero padding 을 추가하는 방식으로 kpage를 완성한다. 해당 과정을 반복하여 입력으로 받은 read_bytes와 zero_bytes를 만족할 때까지 실행하게 되면서 결국 user program을 memory 로 읽어오게 된다.
+
+```C
+static bool
+setup_stack (void **esp) 
+{
+  uint8_t *kpage;
+  bool success = false;
+
+  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  if (kpage != NULL) 
+    {
+      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      if (success)
+        *esp = PHYS_BASE;
+      else
+        palloc_free_page (kpage);
+    }
+  return success;
+}
+```
+esp 를 설정할 때 사용하는 함수로 user virtual memory의 top에 0으로 초기화된 page를 할당하는 방식으로 설정된다. install_page 함수를 실행하여 user stack을 kernel page에 할당하게 되고 esp는 PHYS_BASE로 지정되어 Stack pointer를 반환하게 된다. 이를 통해서 top 부터 메모리를 PGSIZE 까지 사용할 수 있도록 할당되는 방식이다.
+
+```C
+static bool
+install_page (void *upage, void *kpage, bool writable)
+{
+  struct thread *t = thread_current ();
+
+  return (pagedir_get_page (t->pagedir, upage) == NULL
+          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+```
+virtual address (UPAGE)와 kernel virtual address(KPAGE) 사이의 mapping 을 page table에 추가하는 함수이다. writable 이 설정되어 있다면 USEr process는 해당 page를 수정할 수 있는 권한이 있으며, UPAGE는 이미 Mapping 되어 있으면 안된다. 또한, KPAGE의 경우에는 user pool 에서 Obtained 되어야 하며, 성공할 경우 True를 반환하게 된다.
+
+이렇게 pintos가 부팅되면서 어떻게 file system이 구성되고, 그렇게 구성된 file system 을 바탕으로 init.c 에서 main 함수를 통해 argument가 넘어가면서 실제 process 단위로 어떤 과정을 거쳐서 user program 이 실행되는지를 확인하였다. 하지만, 아직 확인하지 못한 부분이 남았다. 바로 TSS와 GDT 이다. 둘 다 main 함수 실행 시 초기화되면서 각 메모리를 보호하고 인터럽트 발생 시 어떻게 작동되는지 이해할 수 있는 중요한 부분이기에 추가적인 분석이 필요하다. 
+
+#### tss.c & tss.h
+TSS는 Task-State Segment 로 process의 multitasking을 지원하기 위한 Struct 이다. 기존에는 멀티태스킹을 위한 것으로, Task 별로 Register, Stack, Segment를 저장하게 된다. 하지만 실제로는 SW-level에서 Multitasking이 구현되어 있어서 TSS는 interrupt 발생 시에 사용되는 목적으로 남겨져 있다. user program 에서 Interrupt가 발생하는 시에 TSS의 ss0, esp0에 저장된 정보를 바탕으로 바탕으로 Kernel stack 으로 바로 전환하게 되면서 이를 통해서 user stack 이 아닌 안전한 kernel stack 에서 interrupt를 작동하게 된다. 추가적으로 kernel stack에서 interrupt가 발생할 경우에는 추가적인 switch가 필요하지 않게 된다. 따라서 TSS는 ss0과 esp0에 새로운 thread의 Kernel stack address가 반영되도록 구현되었으며, 실제 context switch 시에는 Thread_schedule_tail() 에서 TSS의 stack pointer를 새로운 thread의 kernel stack address가 되도록 setting 하여 잘 switch가 작동하도록 설정해야 한다.
+
+```C
+struct tss
+  {
+    uint16_t back_link, :16;
+    void *esp0;                         /* Ring 0 stack virtual address. */
+    uint16_t ss0, :16;                  /* Ring 0 stack segment selector. */
+    void *esp1;
+    uint16_t ss1, :16;
+    void *esp2;
+    uint16_t ss2, :16;
+    uint32_t cr3;
+    void (*eip) (void);
+    uint32_t eflags;
+    uint32_t eax, ecx, edx, ebx;
+    uint32_t esp, ebp, esi, edi;
+    uint16_t es, :16;
+    uint16_t cs, :16;
+    uint16_t ss, :16;
+    uint16_t ds, :16;
+    uint16_t fs, :16;
+    uint16_t gs, :16;
+    uint16_t ldt, :16;
+    uint16_t trace, bitmap;
+  };
+
+/* Kernel TSS. */
+static struct tss *tss;
+```
+TSS 를 위한 struct로 call gate, task gate를 위한 switch 발생 시에 필요한 Data들을 포함하게 된다. 다른 task의 TSSㄹ를 저장하는 Back_link, kernel stack을 저장하는 esp0, ss과 나머지 실제 사용되지 않지만 기존 TSS에 존재하는 데이터로 구성되어 있다.
+
+```C
+void
+tss_init (void) 
+{
+  tss = palloc_get_page (PAL_ASSERT | PAL_ZERO);
+  tss->ss0 = SEL_KDSEG;
+  tss->bitmap = 0xdfff;
+  tss_update ();
+}
+```
+TSS를 설정하는 함수로 pintos 에서 구현된 TSS는 call gate나 task gate와 같이 실행되는 것이 아니기 때문에 일부 데이터(ss0, esp0, bitmap)만 저장하고 사용하게 된다. 따라서 tss_init 에서는 ss0 에는 SEL_KDSEG(kernel data selector)를 할당하고 tss_update를 통해서 esp0 을 초기화하게 된다.
+
+```C
+struct tss *
+tss_get (void) 
+{
+  ASSERT (tss != NULL);
+  return tss;
+}
+```
+현재 TSS 를 반환한다.
+
+```C
+void
+tss_update (void) 
+{
+  ASSERT (tss != NULL);
+  tss->esp0 = (uint8_t *) thread_current () + PGSIZE;
+}
+```
+TSS의 esp0 을 업데이트하는 함수로 현재 thread의 kernel_stack의 끝을 지정하도록 하여 interrupt가 발생하여 Kernel mode로 Switch 시에 kernel stack 이 사용되게 지정한다.
+
+#### gdt.h & gdt.c
+GDT는 Global Descriptor Table의 약자로 memory segment 에 관한 정보를 담고 있으며, 시스템 내의 모든 프로세서가 사용할 수 있는 segment 를 정의하고 있다. 또한 per-processor 단위의 LDT도 존재하긴 하지만 현대의 OS에서는 잘 사용되지 않는다. GDT의 각 entry 에서는 byte offset을 기준으로 구별되며, 각 byte offset이 segment를 의미한다. segment는 code, data, TSS 크게 3가지로 구성되어 있다.
+
+### Manage Virtual Memory
+
 
 ### System Call Handling Procedure in Pintos
 ```C
