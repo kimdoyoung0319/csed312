@@ -41,7 +41,7 @@ Startup Details에서는 이러한 과정에 대해 자세히 서술하고 있�
 운영체제는 시스템 호출이 발생하면 인자를 시스템 호출 핸들러에 전달하고, 시스템 
 호출 핸들러의 반환값을 다시 사용자 프로세스에 전달해야 한다.
 
-이러한 시스템 콜에는 시스템의 실행을 중지하는 `halt()`, 프로세스의 실행을 자식
+이러한 시스템 호출에는 시스템의 실행을 중지하는 `halt()`, 프로세스의 실행을 자식
 프로세스의 종료까지 잠시 멈추는 `wait()`, 실행 파일을 실행하는 `exec()` 등이 
 있다. 
 
@@ -311,6 +311,185 @@ kill (struct intr_frame *f)
 `kill()`이 이를 처리하도록 하고 있다. 페이지 폴트 예외와 페이지 폴트 예외 처리
 핸들러에 대해서는 다음 단락에서 더 자세히 살펴볼 것이다.
 
+### IA32 Paging and Address Translation
+사용자 메모리 접근과 페이지 폴트 처리에 대해 살펴보기 전에, IA32 아키텍처에서
+가상 주소(virtual address)가 실제 물리적 주소로 어떻게 번역되며, Pintos에서는
+이러한 번역 과정이 어떻게 처리되는지 알아보자.
+
+IA32 아키텍처에서는 페이지 디렉터리(page directory)와 페이지 
+테이블(page table)의 두 계층으로 이루어진 자료구조를 통해 가상 주소를 번역한다.
+먼저, 32비트 가상 주소는 다음의 세 비트 필드로 나누어진다.
+
+|       31~22        |      21~12     |    11~0   |
+|:------------------:|:--------------:|:---------:|
+|Page Directory Index|Page Table Index|Page Offset|
+
+이 중 페이지 디렉터리 인덱스는 페이지 디렉터리를 참조하는데 사용되며, 페이지
+디렉터리에 저장된 PDE에는 각각의 페이지 테이블의 주소가 저장된다. 이렇게 PDE를
+통해 페이지 테이블을 찾으면, 페이지 테이블 인덱스를 통해 다시 한번 해당 PTE를
+참조하며, 이때 PTE에 있는 물리적 주소와 페이지 오프셋을 더한 것이 실제 물리적
+주소가 된다. PTE는 하나당 32비트이며, 따라서 20비트의 물리적 주소를 제외한 PTE의
+나머지 비트 필드에는 수정 여부(dirty), 접근 여부(accessed), 존재 여부(present),
+접근 권한(user/supervisor), 쓰기 가능(writable) 등의 정보가 저장된다. 
+
+그렇다면, 이러한 페이지 디렉터리는 어떻게 프로세서에 의해 참조될까? IA32 
+아키텍처 프로세서는 cr0부터 cr8의 컨트롤 레지스터를 가지고 있다. 이 중, cr3
+레지스터는 현재 가상 주소 번역에 사용되는 페이지 디렉터리의 주소를 담고 있다.
+즉, 가상 주소를 통한 메모리 접근 요청이 들어오면 프로세서는 cr3 레지스터가 
+가리키는 페이지 디렉터리에서 (PDE에 담긴) 페이지 테이블의 주소를 찾고, 페이지
+테이블에서 다시 해당하는 물리적 주소를 찾아 이를 오프셋과 더해 물리적 주소를
+생성한다. 만약 이 과정에서 해당 페이지 테이블 혹은 페이지가 존재하지 않는다면,
+즉, 존재 여부를 나타내는 비트(present)가 0이라면 프로세서는 페이지 폴트를 
+발생시켜 운영체제로 하여금 이를 처리하도록 할 것이다.
+
+IA32 아키텍처에서는 운영체제에 직접 물리적 주소로 메모리에 접근할 방법을
+제공하지 않는다. 따라서, Pintos에서는 `PHYS_BASE` 위의 가상 주소 공간을 일대일로
+물리적 주소에 대응시키는 방법을 사용한다. 정확히는, 물리적 주소 `paddr`에 대해
+대응되는 커널 영역 가상 주소는 `paddr + PHYS_BASE`가 된다. Pintos는 
+`threads/init.c`의 `paging_init()`을 통해, 해당 영역의 가상 주소가 물리적 주소에
+바로 대응될 수 있도록 페이지 디렉터리와 페이지 테이블을 초기화한다.
+
+```C
+/* From init.c */
+static void
+paging_init (void)
+{
+  uint32_t *pd, *pt;
+  size_t page;
+  extern char _start, _end_kernel_text;
+
+  pd = init_page_dir = palloc_get_page (PAL_ASSERT | PAL_ZERO);
+  pt = NULL;
+  for (page = 0; page < init_ram_pages; page++)
+    {
+      uintptr_t paddr = page * PGSIZE;
+      char *vaddr = ptov (paddr);
+      size_t pde_idx = pd_no (vaddr);
+      size_t pte_idx = pt_no (vaddr);
+      bool in_kernel_text = &_start <= vaddr && vaddr < &_end_kernel_text;
+
+      if (pd[pde_idx] == 0)
+        {
+          pt = palloc_get_page (PAL_ASSERT | PAL_ZERO);
+          pd[pde_idx] = pde_create (pt);
+        }
+
+      pt[pte_idx] = pte_create_kernel (vaddr, !in_kernel_text);
+    }
+
+  /* Store the physical address of the page directory into CR3
+     aka PDBR (page directory base register).  This activates our
+     new page tables immediately.  See [IA32-v2a] "MOV--Move
+     to/from Control Registers" and [IA32-v3a] 3.7.5 "Base Address
+     of the Page Directory". */
+  asm volatile ("movl %0, %%cr3" : : "r" (vtop (init_page_dir)));
+}
+```
+`paging_init()`의 구현을 보면, 먼저 페이지 디렉터리로 사용될 페이지를 
+할당받는다. 이후, 물리적 메모리의 각 페이지마다 해당하는 물리 주소를 구하고,
+이를 해당하는 가상 주소로 변환한다. 이후, 만약 해당 페이지에 해당하는 PTE가 
+저장될 페이지 테이블이 없다면 이를 할당받고, 페이지 테이블을 가리키는 PDE를 
+페이지 디렉터리에 등록한다. 이를 커널 영역의 각 메모리 페이지마다 반복하고,
+이후 초기화된 페이지 디렉터리를 가리키는 `init_page_dir`을 cr3 레지스터에 
+저장하여 이후의 가상 주소 번역이 해당 페이지 디렉터리를 통해 이루어지도록 한다.
+
+```C
+/* From threads/vaddr.h */
+/* Offset within a page. */
+static inline unsigned pg_ofs (const void *va) {
+  return (uintptr_t) va & PGMASK;
+}
+
+/* Virtual page number. */
+static inline uintptr_t pg_no (const void *va) {
+  return (uintptr_t) va >> PGBITS;
+}
+
+/* Round up to nearest page boundary. */
+static inline void *pg_round_up (const void *va) {
+  return (void *) (((uintptr_t) va + PGSIZE - 1) & ~PGMASK);
+}
+
+/* Round down to nearest page boundary. */
+static inline void *pg_round_down (const void *va) {
+  return (void *) ((uintptr_t) va & ~PGMASK);
+}
+```
+`threads/vaddr.h`에서는 가상 주소에 대해 페이지 오프셋, 페이지 번호, 페이지 
+시작 주소로의 반올림/내림 등 다양한 연산을 할 수 있는 보조 함수를 제공한다. 
+또한, 인자 `vaddr`을 `PHYS_BASE`와 비교하여 `vaddr`이 사용자 가상 주소 영역에 
+포함되는지 혹은 커널 가상 주소 영역에 포함되는지를 반환하는 `is_user_vaddr()`, 
+`is_kernel_vaddr()` (Pintos에서는 `PHYS_BASE` 이상의 가상 주소는 커널 영역,
+`PHYS_BASE` 아래의 가상 주소는 사용자 영역으로 간주된다는 점을 기억하자), 물리 
+주소 `paddr`을 커널 가상 주소로 변환하는 `ptov()`, 반대로 가상 주소 `vaddr`을
+물리 주소로 변환하는 `vtop()` 함수를 제공하며, 이들은 동작이 크게 복잡하지 않은 
+보조 함수이기 때문에 보고서에는 포함하지 않았다.
+
+```C
+/* threads/pte.h */
+/* Obtains page table index from a virtual address. */
+static inline unsigned pt_no (const void *va) {
+  return ((uintptr_t) va & PTMASK) >> PTSHIFT;
+}
+
+/* Obtains page directory index from a virtual address. */
+static inline uintptr_t pd_no (const void *va) {
+  return (uintptr_t) va >> PDSHIFT;
+}
+
+...
+
+/* Returns a PDE that points to page table PT. */
+static inline uint32_t pde_create (uint32_t *pt) {
+  ASSERT (pg_ofs (pt) == 0);
+  return vtop (pt) | PTE_U | PTE_P | PTE_W;
+}
+
+/* Returns a pointer to the page table that page directory entry
+   PDE, which must "present", points to. */
+static inline uint32_t *pde_get_pt (uint32_t pde) {
+  ASSERT (pde & PTE_P);
+  return ptov (pde & PTE_ADDR);
+}
+
+/* Returns a PTE that points to PAGE.
+   The PTE's page is readable.
+   If WRITABLE is true then it will be writable as well.
+   The page will be usable only by ring 0 code (the kernel). */
+static inline uint32_t pte_create_kernel (void *page, bool writable) {
+  ASSERT (pg_ofs (page) == 0);
+  return vtop (page) | PTE_P | (writable ? PTE_W : 0);
+}
+
+/* Returns a PTE that points to PAGE.
+   The PTE's page is readable.
+   If WRITABLE is true then it will be writable as well.
+   The page will be usable by both user and kernel code. */
+static inline uint32_t pte_create_user (void *page, bool writable) {
+  return pte_create_kernel (page, writable) | PTE_U;
+}
+
+/* Returns a pointer to the page that page table entry PTE points
+   to. */
+static inline void *pte_get_page (uint32_t pte) {
+  return ptov (pte & PTE_ADDR);
+}
+```
+
+|              31 ~ 12             |11 ~ 9| 8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+|:--------------------------------:|:----:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+|Page Table Address or Page Address|  AVL | G |PAT| D | A |PCD|PWT|U/S|R/W| P |
+
+위는 전술한 PDE와 PTE의 비트 필드이다. 
+
+`threads/pte.h`에서는 가상 주소에서 페이지 디렉터리 인덱스, 페이지 테이블 
+인덱스를 추출하는 `pd_no()`, `pt_no()`, PDE와 PTE를 위의 비트 필드 형식에
+맞춰 생성하는 `pde_create()`, `pte_create_user()`, `pte_create_kernel()` 
+함수를 제공한다. 이때, 사용자 영역 페이지를 가리키는 PTE의 접근 권한 비트는
+1로 설정되어야 하기 때문에 `pte_create_user()`와 `pte_create_kernel()`이 따로
+정의되었다. 마지막으로 PDE에서 페이지 테이블 주소를 추출하는 `pde_get_pt()`와
+PTE에서 페이지 주소를 추출하는 `pte_get_page()`가 정의되어 있다.
+
 ### User Memory Access and Handling Page Fault
 사용자의 시스템 호출을 처리하기 위해 커널은 종종 사용자가 제공한 주소를 
 역참조(dereference)하여야 한다. 예를 들어서, 위 단락에서 서술한 바와 같이, 
@@ -324,11 +503,16 @@ kill (struct intr_frame *f)
 가리킨다면, 즉, esp가 `PHYS_BASE` 위를 가리키고 있다면 사용자 프로세스는 시스템
 호출을 통해 본디 불가능해야 할 커널 영역 데이터를 읽거나 수정할 수 있게 된다.
 
-<!-- How is page fault raised when the pointer passed by user process is invalid? -->
 따라서, 운영체제에서는 시스템 호출을 처리하기에 앞서서 사용자 프로세스에서 
 전달된 포인터, 레지스터, 혹은 주소 값이 유효한지를 검증하여야 한다. Pintos 
-문서에 따르면, 두 가지 접근이 가능하다. 첫번째 접근법은 사용자 주소를 역참조하기
-이전에 이의 유효성을 검증하는 것이다.
+문서에 따르면, 두 가지 접근이 가능하다. 첫 번째 접근법은 사용자 주소를 
+역참조하기 이전에 이의 유효성을 검증하는 것이다. Pintos에서는 이러한 유효성 
+검증과 하드웨어 수준의 페이지 테이블에 대한 추상화를 위해 `userprog/pagedir.c`에
+정의된 인터페이스 함수를 제공한다.
+
+
+
+
 
 
 
