@@ -3157,8 +3157,17 @@ filesys_remove (const char *name)
 ## Design Description
 
 ### Process Termination Messages
+Exit 의 실행이나 혹은 다른 이유로 인해 user process가 종료될 때에 다음과 같이 process의 이름과 exit code를 출력하는 함수를 구현하고자 한다. 출력되는 이름은 process_execute() 에 입력된 name과 같은 이름이며, 만약 user process가 아닌 Kernel process가 종료되었을 경우에는 출력하지 않도록 유의해야 한다.
+```C
+printf ("%s: exit(%d)\n", ...);
+```
+
+구현 방법의 경우 system call 형식을 사용하여 syscall.c 에 syscall_exit()과 같이 exit system call handler를 선언하고 handler 내부에서 위의 형식에 맞춘 Printf() 실행 이후 thread_current() 를 통해 현재 thread를 thread_exit() 을 실행하는 함수를 선언하여 사용할 수 있을 것이다. 또한, 해당 syscall_exit()을 바탕으로 오류가 발생한 경우에도 활용하여 User process 종료 시 termination message를 출력할 수 있게 된다.
 
 ### Argument passing
+현재 구현은 process_execute() 가 실행 시에 새롭게 생성되는 process에게 argument passing 이 구현되지 않은 상황이다. 이말은 즉, process_execute() 함수의 실행 과정 내에서 입력받은 command line을 공백에 따라 구분하여 새롭게 생성될 Process 에게 전달해주는 것이 필요하다. 이 때 공식 문서에서 설명하고 있는 80-86 을 통해 실행이 되어야 한다. Pintos에서 C 프로그램이 실행 될 때 main 함수에가 실행되기 위해서는 _start() 에서 Main()에게 argc, argv 형태로 전달을 해주게 되고, 이 때 전달되는 argv를 확인해본다면, 우측의 내용 즉 입력 문자가 foo bar 라고 한다면 bar, foo 순서대로 stack 에 Push 가 되고, 마지막으로 가짜 Void return address를 Push 하여 구현이 argv 를 stack 에 넣어주는 것을 알 수 있다. 또한, calling convention에 맞춰서 caller가 argument를 stack에 오른쪽에서 왼쪽 순서대로 Push 하고, CAller는 return address를 Push하게 되면서, callee의 첫 번째 Instruction 으로 jump하게 된다. 이후 callee가 실행되는데 이 때 stack pointer가 return address, 첫 번째 argument, 두 번째 Argument 순서대로 가르키고 있게 된다. 이후 callee가 실행을 마무리하고 return value가 존재한다면 EAX에 저장하고 return address 를 pop 하여 해당 주소로 JUmp 하게 된다. (Ret 명령어 사용) 마지막으로 stack 에 남아있는 모든 argument를 pop 하게 된다. 
+
+또한, Command line을 공백에 따라 parsing 하기 위해서 구현된 함수는 strtok_r 함수로 공백을 기준으로 문자열을 parsing 할 수 있다. 전체를 정리하자면 process_execute() 함수 내에서 입력받은 command line을 strtok_r 함수를 통해 Parsing 하게 되고, 이 때 파일 이름과 인자를 구분하여 남은 인자들을 start_process() 에게 전달하여 해당 User program 을 실행 시에 전달이 필요하게 된다. Start_process() 함수 내에서도 마찬가지로 argv에 convention에 맞도록 오른쪽부터 Stack 에 Push 하여 Argv를 완성하여 User process를 올바르게 실행할 수 있도록 구현하고자 한다.
 
 ### System Calls
 Pintos에서 사용자 프로세스가 시스템 호출을 발생시켰을 경우 상술한 대로 0x30
@@ -3271,5 +3280,7 @@ page_fault (struct intr_frame *f)
 동기화 대책을 강구해야 한다는 점을 주의하며 구현하면 될 것이다.₩:ㅈ
 
 ### Denying Write to Executables
+process가 실행 중인 경우 해당 file을 수정하면 큰 문제가 발생할 가능성이 존재한다. 따라서 process를 실행하기 전에 write을 금지하는 부분이 추가적으로 필요하게 된다. 또한, 만약 write을 금지했다면 process를 종료하기 이전에 다시 allow 해주는 과정이 필요한데 이 때 file 을 기록하고 있어야 하므로, struct thread에 추가적으로 현재 실행되고 있는 file을 기록해주는 것이 필요할 것이다. 위의 금지하는 부분은 Process.c의 Load() 함수 내에서 해당 파일 이름을 current thread에 저장해주고, 이후에 file_deny_write() 을 통해서 실행 중에 파일에 쓰기가 되는 것을 방지할 수 있다. 또한, process_exit() 함수 내에서 종료하기 이전에 file_allow_write() 함수를 통해서 current_thread에 기록된 file을 바탕으로 다시 allow 해주고 종료하는 것을 통해 구현할 수 있게 될 것이다.
 
 ## Design Discussion
+이번 내용은 boot strap부터 포함하여 file system, thread, process 등 전반적인 이해가 필요하다 보니 굉장히 이해하는 데 많은 시간이 소요되었다. 특히 user program 을 실행하기 위해서 생각했던 것은 VM 과 관련된 부분 정도만 고려하고 있었는데, File system 적인 측면에서 Inode로 관리되는 방법론에 대해서 처음 이해하게 되었으며, pintos에서 어떻게 file system 을 manage 하는지에 대한 과정을 보다 명확하게 이해할 수 있어서 큰 도움이 된 것 같다. 또한, VM을 관리하는 과정에 있어서도 TSS와 같은 여러 struct를 통해 Context switch 시에도 정보를 유지하는 과정에 대해서도 보다 명확하게 이해할 수 있었다.
