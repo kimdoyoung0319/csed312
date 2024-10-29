@@ -1810,8 +1810,34 @@ TSS의 esp0 을 업데이트하는 함수로 현재 thread의 kernel_stack의 �
 #### gdt.h & gdt.c
 GDT는 Global Descriptor Table의 약자로 memory segment 에 관한 정보를 담고 있으며, 시스템 내의 모든 프로세서가 사용할 수 있는 segment 를 정의하고 있다. 또한 per-processor 단위의 LDT도 존재하긴 하지만 현대의 OS에서는 잘 사용되지 않는다. GDT의 각 entry 에서는 byte offset을 기준으로 구별되며, 각 byte offset이 segment를 의미한다. segment는 code, data, TSS 크게 3가지로 구성되어 있다.
 
-### Manage Virtual Memory
+```C
+void
+gdt_init (void)
+{
+  uint64_t gdtr_operand;
 
+  gdt[SEL_NULL / sizeof *gdt] = 0;
+  gdt[SEL_KCSEG / sizeof *gdt] = make_code_desc (0);
+  gdt[SEL_KDSEG / sizeof *gdt] = make_data_desc (0);
+  gdt[SEL_UCSEG / sizeof *gdt] = make_code_desc (3);
+  gdt[SEL_UDSEG / sizeof *gdt] = make_data_desc (3);
+  gdt[SEL_TSS / sizeof *gdt] = make_tss_desc (tss_get ());
+
+  gdtr_operand = make_gdtr_operand (sizeof gdt - 1, gdt);
+  asm volatile ("lgdt %0" : : "m" (gdtr_operand));
+  asm volatile ("ltr %w0" : : "q" (SEL_TSS));
+}
+```
+GDT의 경우 array 형태로 관리되며, DPL 이 0인 경우 kernel 의 segment를 의미하고, DPL이 3인 경우 user program 의 Segment를 의미하게 된다.
+
+User Program의 실행 과정을 위의 구현에 따라 정리해보고자 한다. ELF format의 User program을 초기에 pintos-mkdisk 통해서 생성한 가상의 disk에 load하여 실행시킬 수 있을 것이다. 이 때 load되는 User program은 Memory 에 들어갈 수 있을 만큼 용량이 작아야 하면서도, 아직 Syscall 이 구현되어 있지 않으므로 malloc()과 같은 연산은 실행하기 어려울 것이며, 이외에도 floating point 연산을 switching thread 시에 kernel에서 저장하지 않으므로 FP 연산이 지원되지 않을 것이다. 우선 User Program 이 위의 조건을 만족한다면, compiler와 linker를 사용하여 Pintos에서 실행을 위한 80x86 ELF executable을 생성할 수 있게 된다. 위 특성들을 바탕으로 볼 때 Makefile을 통해 User Program을 ELF execuatble 형식으로 컴파일을 진행하고, 이후에 virtual disk에 해당 컴파일된 프로그램을 복사하게 된다. 이후, pintos가 부팅하는 과정에서 virtual disk에서 file system을 불러오게 되는데, 이 과정에서 executable 한 User program을 발견하게 된다면, 해당 프로그램을 메모리에 올리기 위해 process_execute() 를 통해 메모리에서 실행하게 된다. 이후 file system 에서 ELF execuatble 을 읽어와서 memory에 Code, Data, BSS, Stack 등이 저장되고, 각 segment는 virtual address space 내에 mapping 된다. 이후 stack 까지 설정이 완료되면, intr_exit() 을 통해 마치 인터럽트가 종료된 것처럼 꾸미면서 entry point로 들어가며 실행이 시작되게 된다.
+
+### Virtual Memory Management
+pintos에서는 vritual memory를 크게 2가지 영역으로 나누어 구성되어 있다. 첫 번째 영역은 virtual address 0부터 PHYS_BASE 까지 할당되어 있으며 PHYS_BASE는 vaddr.h에 선언되어 있는 상수로 3 GB 의 공간으로 할당되어 있다. 나머지 영역이 Kernel Memory로 할당되어 있으며, PHYS_BASE 부터 4 GB 까지가 Kernel memeory 로 사용되게 된다. 실제 구현을 살펴보게 되면, PHYS_BASE를 기준으로 낮은 영역은 User Memeory, 큰 영역은 Kernel Memory로 사용되며 Kernel Memory는 실제 Physical Memory와 1 대 1 대응이 되며 PHYS_BASE를 더하고 빼는 것만으로도 physical memory와 Virtual memory를 변환할 수 있으며, Physical Memory의 사이즈와 Kernel Memory의 Size가 같다는 것을 의미함을 알 수 있다. 또한, User Program에서는 PHYS_BASE 이하의 영역에는 자유롭게 접근이 가능하지만, 그 이상의 영역인 Kernel memory 에 접근하게 될 경우 Page Fault() 와 같은 문제가 발생할 수 있게 된다. 반면에 Kernel 에서는 모든 Virtual Memory Space에 자유롭게 접근할 수 있다. 이외에도 User Memory가 Mapping 되지 않은 경우에 해당 Virtual Memory Address에 접근 시에도 Page_Fault()가 발생하게 된다.
+
+일반적으로 virtual memory layout은 일반적으로 0x08048000 부터 시작하여 Code Segment, Initialized Data Segment, Uninitalized Data Segment, User Stack 순서대로 저장되어 있다. Stack의 경우에는 PHYS_BASE부터 시작하여 주소가 내려가는 방향으로 Stack이 커지게 된다. 이번 프로젝트에서는 고정된 stack size만 고려하게 된다. 실제 이렇게 user virtual memeory space를 구성하는 코드는 위에el서 분석한 process.c 의 load() 함수 내에서 이뤄지고 있으며, ELF header를 참고하여 Code 와 Data Segment를 Memory에 배치하게 되는데, load_segment()를 통해서 각 ELF header 에 따라서 User Memory에 배치하게 된다. 이러한 Memory Layout 자체는 Linker Script에 의해서 결정되며 해당 Segment를 적절하게 배치하게 된다. 
+
+또한, system call 시에 User Memory 관리를 위해서 올바른 주소로 접근할 수 있도록 제한해야 한다. 예를 들어 system call 중에 NULL pointer, 혹은 mapping 되지 않은 memory address, kernel memory pointer 등등 제한된 영역에 접근하려 하거나 접근이 금지된 영역에 접근을 하려고 할 때 이를 방지해야 한다. 따라서 접근을 허용하기 이전에 두 가지 방법을 통해서 User Memory를 안전하게 사용할 수 있도록 해야한다. 첫 번째 방법은 vaddr.h 에 정의되어 있는 is_user_vaddr() 나, 혹은 padedir에 있는 함수를 활용해 access가 가능한지 여부를 미리 확인하고, 확인이 끝난 이후에 access 하는 과정으로 구현할 수 있다. 이 구현의 경우 약간의 Overhead가 추가되므로 속도 저하를 야기할 수 있다. 다른 방법으로는 Pointer가 전체가 유효한지 확인하지 말고 단순히 PHYS_BASE 이하인지 여부만 우선적으로 확인하고, 그 이후에 page_fault를 발생시켜 exception 처리를 모두 Page_Fault() 를 통해 구현할 수 있으며, 이 경우 MMU를 통해서 보다 빠른 구현이 가능하지만, Exception handler로 인한 overhead가 존재하게 된다. 접근 이후에도 잘못된 메모리로 확인된 경우 Lock을 해제하거나, 혹은 Memory 를 free하여 Memory leakage를 방지해야 한다.
 
 ### System Call Handling Procedure in Pintos
 ```C
@@ -3225,8 +3251,21 @@ struct thread
 ## Design Description
 
 ### Process Termination Messages
+Exit 의 실행이나 혹은 다른 이유로 인해 user process가 종료될 때에 다음과 같이 process의 이름과 exit code를 출력하는 함수를 구현하고자 한다. 출력되는 이름은 process_execute() 에 입력된 name과 같은 이름이며, 만약 user process가 아닌 Kernel process가 종료되었을 경우에는 출력하지 않도록 유의해야 한다.
+```C
+printf ("%s: exit(%d)\n", ...);
+```
+
+구현 방법의 경우 system call 형식을 사용하여 syscall.c 에 syscall_exit()과 같이 exit system call handler를 선언하고 handler 내부에서 위의 형식에 맞춘 Printf() 실행 이후 thread_current() 를 통해 현재 thread를 thread_exit() 을 실행하는 함수를 선언하여 사용할 수 있을 것이다. 또한, 해당 syscall_exit()을 바탕으로 오류가 발생한 경우에도 활용하여 User process 종료 시 termination message를 출력할 수 있게 된다.
 
 ### Argument passing
+현재 구현은 process_execute() 가 실행 시에 새롭게 생성되는 process에게 argument passing 이 구현되지 않은 상황이다. 이말은 즉, process_execute() 함수의 실행 과정 내에서 입력받은 command line을 공백에 따라 구분하여 새롭게 생성될 Process 에게 전달해주는 것이 필요하다. 이 때 공식 문서에서 설명하고 있는 80x86 을 통해 실행이 되어야 한다. 
+
+우선 C 언어 기반의 user program 이 실행 될 때 pintos 에서는 user/entry.c 내에 위치한 _start() 함수를 통해 main() 함수가 실행되게 된다. 이 때 main()을 exit() 함수가 감싸고 있기 때문에 _start() 내에서 main() 을 실행하고 실행이 종료되기 까지를 기다리게 되는 방식으로 구현되어 있다. 이 때 main() 함수를 실행할 때 넘겨주게 되는 agrument는 개수를 저장하는 argc와 실제 argument인 argv로 구성되어 있다. 이 argv를 올바르게 넘겨주기 위해서는 80x86의 calling convention을 따라야 한다. stack 을 구성할 때 주요한 특성은 argument를 오른쪽에서 왼쪽 순서대로 push하고 4의 배수로 stack pointer가 위치하도록 aligment를 해줘야 하며, argv를 push 한 이후에 차례대로 argc와 c convention을 맞춰주기 위한 return address를 추가해줘야 한다. 하지만 이 때 _start() 는 실제로 return이 의미가 없으므로 void address인 0을 Push 해주게 된다. 또한, Command line을 공백에 따라 parsing 하기 위해서 구현된 함수는 strtok_r 함수로 공백을 기준으로 문자열을 parsing 할 수 있다.
+
+자세한 calling convetion은 다음과 같다. caller가 argument를 stack에 오른쪽에서 왼쪽 순서대로 Push 하고, 이때 stack 의 pointer 는 줄어드는 방식으로 push 된다. 이후 Caller는 return address를 Push하게 되면서, callee의 첫 번째 Instruction 으로 jump하게 된다. 이후 callee가 실행되는데 이 때 stack pointer가 return address, 첫 번째 argument, 두 번째 Argument 순서대로 가르키고 있게 된다. 이후 callee가 실행을 마무리하고 return value가 존재한다면 EAX에 저장하고 return address 를 pop 하여 해당 주소로 Jump 하게 된다. (Ret 명령어 사용) 마지막으로 stack 에 남아있는 모든 argument를 pop 하게 된다.  
+
+구현할 부분은 다음과 같이 정리할 수 있을 것이다. process_execute() 함수 내에서 입력받은 command line을 strtok_r 함수를 통해, 실행하고자 하는 파일의 이름과 나머지를 구별하게 된다. 이후 start_process() 함수 내에서 함수의 이름을 통해 load() 를 실행하고 나머지 인자도 마찬가지로 strtok_r() 을 통해서 인자들을 공백에 따라 구별하게 되며, 이 함수 내에서 위에서 설명한 calling convention에 맞춰서 stack 을 구성하여 이후 해당 user program 을 실행할 환경을 구성해주게 될 수 있을 것이다. 따라서 strtok_r()를 사용하여 process_execute() 에서 parsing 하는 부분과, start_process() 내에서 stack 에 push 하여 convention에 맞도록 argv를 구성하는 부분을 구현해야 할 것이다.
 
 ### System Calls
 Pintos에서 사용자 프로세스가 시스템 호출을 발생시켰을 경우 상술한 대로 0x30
@@ -3339,5 +3378,7 @@ page_fault (struct intr_frame *f)
 동기화 대책을 강구해야 한다는 점을 주의하며 구현하면 될 것이다.₩:ㅈ
 
 ### Denying Write to Executables
+process가 실행 중인 경우 해당 file을 수정하면 큰 문제가 발생할 가능성이 존재한다. 따라서 process를 실행하기 전에 write을 금지하는 부분이 추가적으로 필요하게 된다. 또한, 만약 write을 금지했다면 process를 종료하기 이전에 다시 allow 해주는 과정이 필요한데 이 때 file 을 기록하고 있어야 하므로, struct thread에 추가적으로 현재 실행되고 있는 file을 기록해주는 것이 필요할 것이다. 위의 금지하는 부분은 Process.c의 Load() 함수 내에서 해당 파일 이름을 current thread에 저장해주고, 이후에 file_deny_write() 을 통해서 실행 중에 파일에 쓰기가 되는 것을 방지할 수 있다. 또한, process_exit() 함수 내에서 종료하기 이전에 file_allow_write() 함수를 통해서 current_thread에 기록된 file을 바탕으로 다시 allow 해주고 종료하는 것을 통해 구현할 수 있게 될 것이다.
 
 ## Design Discussion
+이번 내용은 boot strap부터 포함하여 file system, thread, process 등 전반적인 이해가 필요하다 보니 굉장히 이해하는 데 많은 시간이 소요되었다. 특히 user program 을 실행하기 위해서 생각했던 것은 VM 과 관련된 부분 정도만 고려하고 있었는데, File system 적인 측면에서 Inode로 관리되는 방법론에 대해서 처음 이해하게 되었으며, pintos에서 어떻게 file system 을 manage 하는지에 대한 과정을 보다 명확하게 이해할 수 있어서 큰 도움이 된 것 같다. 또한, VM을 관리하는 과정에 있어서도 TSS와 같은 여러 struct를 통해 Context switch 시에도 정보를 유지하는 과정에 대해서도 보다 명확하게 이해할 수 있었다. 전반적인 pintos에 대해서 다시 알아간 느낌이지만, 구현시에 syscall 이 약 400줄 이상이 예정되어 있으며, filesystem 을 이용할 때 lock을 통해서 구현해야 한다는 점에서 굉장히 난이도가 있을 것으로 생각된다.
