@@ -1810,8 +1810,34 @@ TSS의 esp0 을 업데이트하는 함수로 현재 thread의 kernel_stack의 �
 #### gdt.h & gdt.c
 GDT는 Global Descriptor Table의 약자로 memory segment 에 관한 정보를 담고 있으며, 시스템 내의 모든 프로세서가 사용할 수 있는 segment 를 정의하고 있다. 또한 per-processor 단위의 LDT도 존재하긴 하지만 현대의 OS에서는 잘 사용되지 않는다. GDT의 각 entry 에서는 byte offset을 기준으로 구별되며, 각 byte offset이 segment를 의미한다. segment는 code, data, TSS 크게 3가지로 구성되어 있다.
 
-### Manage Virtual Memory
+```C
+void
+gdt_init (void)
+{
+  uint64_t gdtr_operand;
 
+  gdt[SEL_NULL / sizeof *gdt] = 0;
+  gdt[SEL_KCSEG / sizeof *gdt] = make_code_desc (0);
+  gdt[SEL_KDSEG / sizeof *gdt] = make_data_desc (0);
+  gdt[SEL_UCSEG / sizeof *gdt] = make_code_desc (3);
+  gdt[SEL_UDSEG / sizeof *gdt] = make_data_desc (3);
+  gdt[SEL_TSS / sizeof *gdt] = make_tss_desc (tss_get ());
+
+  gdtr_operand = make_gdtr_operand (sizeof gdt - 1, gdt);
+  asm volatile ("lgdt %0" : : "m" (gdtr_operand));
+  asm volatile ("ltr %w0" : : "q" (SEL_TSS));
+}
+```
+GDT의 경우 array 형태로 관리되며, DPL 이 0인 경우 kernel 의 segment를 의미하고, DPL이 3인 경우 user program 의 Segment를 의미하게 된다.
+
+User Program의 실행 과정을 위의 구현에 따라 정리해보고자 한다. ELF format의 User program을 초기에 pintos-mkdisk 통해서 생성한 가상의 disk에 load하여 실행시킬 수 있을 것이다. 이 때 load되는 User program은 Memory 에 들어갈 수 있을 만큼 용량이 작아야 하면서도, 아직 Syscall 이 구현되어 있지 않으므로 malloc()과 같은 연산은 실행하기 어려울 것이며, 이외에도 floating point 연산을 switching thread 시에 kernel에서 저장하지 않으므로 FP 연산이 지원되지 않을 것이다. 우선 User Program 이 위의 조건을 만족한다면, compiler와 linker를 사용하여 Pintos에서 실행을 위한 80x86 ELF executable을 생성할 수 있게 된다. 위 특성들을 바탕으로 볼 때 Makefile을 통해 User Program을 ELF execuatble 형식으로 컴파일을 진행하고, 이후에 virtual disk에 해당 컴파일된 프로그램을 복사하게 된다. 이후, pintos가 부팅하는 과정에서 virtual disk에서 file system을 불러오게 되는데, 이 과정에서 executable 한 User program을 발견하게 된다면, 해당 프로그램을 메모리에 올리기 위해 process_execute() 를 통해 메모리에서 실행하게 된다. 이후 file system 에서 ELF execuatble 을 읽어와서 memory에 Code, Data, BSS, Stack 등이 저장되고, 각 segment는 virtual address space 내에 mapping 된다. 이후 stack 까지 설정이 완료되면, intr_exit() 을 통해 마치 인터럽트가 종료된 것처럼 꾸미면서 entry point로 들어가며 실행이 시작되게 된다.
+
+### Virtual Memory Management
+pintos에서는 vritual memory를 크게 2가지 영역으로 나누어 구성되어 있다. 첫 번째 영역은 virtual address 0부터 PHYS_BASE 까지 할당되어 있으며 PHYS_BASE는 vaddr.h에 선언되어 있는 상수로 3 GB 의 공간으로 할당되어 있다. 나머지 영역이 Kernel Memory로 할당되어 있으며, PHYS_BASE 부터 4 GB 까지가 Kernel memeory 로 사용되게 된다. 실제 구현을 살펴보게 되면, PHYS_BASE를 기준으로 낮은 영역은 User Memeory, 큰 영역은 Kernel Memory로 사용되며 Kernel Memory는 실제 Physical Memory와 1 대 1 대응이 되며 PHYS_BASE를 더하고 빼는 것만으로도 physical memory와 Virtual memory를 변환할 수 있으며, Physical Memory의 사이즈와 Kernel Memory의 Size가 같다는 것을 의미함을 알 수 있다. 또한, User Program에서는 PHYS_BASE 이하의 영역에는 자유롭게 접근이 가능하지만, 그 이상의 영역인 Kernel memory 에 접근하게 될 경우 Page Fault() 와 같은 문제가 발생할 수 있게 된다. 반면에 Kernel 에서는 모든 Virtual Memory Space에 자유롭게 접근할 수 있다. 이외에도 User Memory가 Mapping 되지 않은 경우에 해당 Virtual Memory Address에 접근 시에도 Page_Fault()가 발생하게 된다.
+
+일반적으로 virtual memory layout은 일반적으로 0x08048000 부터 시작하여 Code Segment, Initialized Data Segment, Uninitalized Data Segment, User Stack 순서대로 저장되어 있다. Stack의 경우에는 PHYS_BASE부터 시작하여 주소가 내려가는 방향으로 Stack이 커지게 된다. 이번 프로젝트에서는 고정된 stack size만 고려하게 된다. 실제 이렇게 user virtual memeory space를 구성하는 코드는 위에el서 분석한 process.c 의 load() 함수 내에서 이뤄지고 있으며, ELF header를 참고하여 Code 와 Data Segment를 Memory에 배치하게 되는데, load_segment()를 통해서 각 ELF header 에 따라서 User Memory에 배치하게 된다. 이러한 Memory Layout 자체는 Linker Script에 의해서 결정되며 해당 Segment를 적절하게 배치하게 된다. 
+
+또한, system call 시에 User Memory 관리를 위해서 올바른 주소로 접근할 수 있도록 제한해야 한다. 예를 들어 system call 중에 NULL pointer, 혹은 mapping 되지 않은 memory address, kernel memory pointer 등등 제한된 영역에 접근하려 하거나 접근이 금지된 영역에 접근을 하려고 할 때 이를 방지해야 한다. 따라서 접근을 허용하기 이전에 두 가지 방법을 통해서 User Memory를 안전하게 사용할 수 있도록 해야한다. 첫 번째 방법은 vaddr.h 에 정의되어 있는 is_user_vaddr() 나, 혹은 padedir에 있는 함수를 활용해 access가 가능한지 여부를 미리 확인하고, 확인이 끝난 이후에 access 하는 과정으로 구현할 수 있다. 이 구현의 경우 약간의 Overhead가 추가되므로 속도 저하를 야기할 수 있다. 다른 방법으로는 Pointer가 전체가 유효한지 확인하지 말고 단순히 PHYS_BASE 이하인지 여부만 우선적으로 확인하고, 그 이후에 page_fault를 발생시켜 exception 처리를 모두 Page_Fault() 를 통해 구현할 수 있으며, 이 경우 MMU를 통해서 보다 빠른 구현이 가능하지만, Exception handler로 인한 overhead가 존재하게 된다. 접근 이후에도 잘못된 메모리로 확인된 경우 Lock을 해제하거나, 혹은 Memory 를 free하여 Memory leakage를 방지해야 한다.
 
 ### System Call Handling Procedure in Pintos
 ```C
