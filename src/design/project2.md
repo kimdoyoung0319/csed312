@@ -1929,14 +1929,99 @@ struct intr_frame
     uint16_t ss, :16;           /* Data segment for esp. */
   };
 ```
-<!-- TODO: intr-stubs.S 및 interrupt.c 발췌하여 서술 -->
 Project 1 design report에서 서술한 바와 같이, IA32 아키텍처에서 `int` 명령어로
 인터럽트가 발생하면, 프로세서는 IDTR이 가리키는 IDT를 참조해 해당하는 ISR을 
 호출한다. 또한, 프로세서는 IDT 게이트의 GDT selector를 cs 레지스터에 load한다.
 cs 레지스터의 최하위 2비트는 프로세서의 특권 수준(privilege level)을 나타내므로, 
-이 과정에서 프로세서의 실행 모드가 사용자 모드에서 OS/hypervisor 모드로 바뀌게 
-된다.
+이 과정에서 프로세서의 실행 모드, 혹은 ring이 사용자 모드에서 OS/hypervisor 
+모드로 바뀌게 된다.
 
+```
+/* From threads/intr-stubs.S */
+.func intr_entry
+intr_entry:
+	/* Save caller's registers. */
+	pushl %ds
+	pushl %es
+	pushl %fs
+	pushl %gs
+	pushal
+        
+	/* Set up kernel environment. */
+	cld			/* String instructions go upward. */
+	mov $SEL_KDSEG, %eax	/* Initialize segment registers. */
+	mov %eax, %ds
+	mov %eax, %es
+	leal 56(%esp), %ebp	/* Set up frame pointer. */
+
+	/* Call interrupt handler. */
+	pushl %esp
+.globl intr_handler
+	call intr_handler
+	addl $4, %esp
+.endfunc
+
+...
+
+/* Emits a stub for interrupt vector NUMBER.
+   TYPE is `zero', for the case where we push a 0 error code,
+   or `REAL', if the CPU pushes an error code for us. */
+#define STUB(NUMBER, TYPE)                      \
+	.text;                                  \
+.func intr##NUMBER##_stub;			\
+intr##NUMBER##_stub:                            \
+	TYPE;                                   \
+	push $0x##NUMBER;                       \
+        jmp intr_entry;                         \
+.endfunc;					\
+                                                \
+	.data;                                  \
+	.long intr##NUMBER##_stub;
+  
+...
+
+.globl intr_exit
+.func intr_exit
+intr_exit:
+        /* Restore caller's registers. */
+	popal
+	popl %gs
+	popl %fs
+	popl %es
+	popl %ds
+
+        /* Discard `struct intr_frame' vec_no, error_code,
+           frame_pointer members. */
+	addl $12, %esp
+
+        /* Return to caller. */
+	iret
+.endfunc
+```
+```C
+/* Initializes the interrupt system. */
+void
+intr_init (void)
+{
+  uint64_t idtr_operand;
+  int i;
+
+  /* Initialize interrupt controller. */
+  pic_init ();
+
+  /* Initialize IDT. */
+  for (i = 0; i < INTR_CNT; i++)
+    idt[i] = make_intr_gate (intr_stubs[i], 0);
+
+  /* Load IDT register.
+     See [IA32-v2a] "LIDT" and [IA32-v3a] 5.10 "Interrupt
+     Descriptor Table (IDT)". */
+  idtr_operand = make_idtr_operand (sizeof idt - 1, idt);
+  asm volatile ("lidt %0" : : "m" (idtr_operand));
+
+  ...
+}
+```
 Pintos에서는 `threads/interrupt.c`의 `intr_init()`에서 IDTR을 IDT를 
 가리키도록 초기화한다. 각 IDT에는 `intr_stubs.S`에 정의된 `intrNN_stub`(`NN`은 
 `00`부터 `FF`까지의 16진수)가 등록되어 있어, 인터럽트 발생시 해당 루틴으로 실행 
@@ -3127,6 +3212,15 @@ filesys_remove (const char *name)
 연속된 공간을 차지하도록 구현되어 있는 등의 다양한 제약조건이 있다는 점이다.
 특히 파일 시스템 내부적으로 동기화가 구현되어있지 않다는 점은 이후 파일 시스템
 인터페이스를 이용해 시스템 호출을 구현할 때 주의하여야 할 점이다.
+
+```C
+struct thread
+  {
+    ...
+    struct list waiters;
+    ...
+  }
+```
 
 ## Design Description
 
