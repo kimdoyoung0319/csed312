@@ -249,14 +249,14 @@ lock_acquire (struct lock *lock)
      than or equal to lock holder's priority. */
   if (!thread_mlfqs && holder != NULL && cur->priority > holder->priority)
     {
-      cur->lock_waiting = lock;
-      list_push_back (&holder->donator_list, &cur->donator);
+      cur->waiting = lock;
+      list_push_back (&holder->donators, &cur->donatorelem);
       thread_donate (holder, 1);
     }
 
   sema_down (&lock->semaphore);
   lock->holder = cur;
-  cur->lock_waiting = NULL;
+  cur->waiting = NULL;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false

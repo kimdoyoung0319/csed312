@@ -103,10 +103,10 @@ struct thread
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-    struct list donator_list;           /* List of threads that have donated. */
-    struct list_elem donator;           /* List element for donating. */
-    struct lock *lock_waiting;          /* Lock this thread is waiting for. */
-    int prev_priority;                  /* Previous priority before donation. */
+    struct list donors;                 /* List of threads that have donated. */
+    struct list_elem donorelem;         /* List element for donating. */
+    struct lock *waiting;               /* Lock this thread is waiting for. */
+    int original;                       /* Previous priority before donation. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

@@ -57,7 +57,7 @@ struct kernel_thread_frame
 struct thread_donation_list
   {
     struct list_elem elem;
-    struct thread *donator;
+    struct thread *donorelem;
     struct thread *donee;
     int priority;
   };
@@ -398,7 +398,7 @@ thread_set_priority (int new_priority)
   struct thread *t, *cur = thread_current ();
 
   cur->priority = new_priority;
-  cur->prev_priority = new_priority;
+  cur->original = new_priority;
 
   if (thread_mlfqs) 
     return;
@@ -406,10 +406,10 @@ thread_set_priority (int new_priority)
   /* New priority should be ignored when current thread has been
      donated from someone else, and the donation is greater than
      new one. */
-  for (e = list_begin (&cur->donator_list); e != list_end (&cur->donator_list); 
+  for (e = list_begin (&cur->donors); e != list_end (&cur->donors); 
        e = list_next (e))
     {
-      t = list_entry (e, struct thread, donator);
+      t = list_entry (e, struct thread, donorelem);
 
       if (t->priority > cur->priority)
         cur->priority = t->priority;
@@ -566,9 +566,9 @@ init_thread (struct thread *t, const char *name, int priority)
   else
     t->priority = priority;
   
-  /* Initialize donator list. */
-  list_init (&t->donator_list);
-  t->prev_priority = priority;
+  /* Initialize donorelem list. */
+  list_init (&t->donors);
+  t->original = priority;
 
 
   old_level = intr_disable ();
@@ -748,49 +748,49 @@ thread_donate (struct thread *t, int depth)
 {
   t->priority = thread_current ()->priority;
 
-  if (depth >= MAX_DONATION_DEPTH || t->lock_waiting == NULL)
+  if (depth >= MAX_DONATION_DEPTH || t->waiting == NULL)
     return;
 
-  struct lock *waiting = t->lock_waiting;
+  struct lock *waiting = t->waiting;
   thread_donate (waiting->holder, depth + 1);
 }
 
 /* Restores donated priority of current thread, caused by acquisition
    of LOCK. It first deletes all donators that donated its priority 
-   to current thread because of LOCK from current thread's donator 
+   to current thread because of LOCK from current thread's donorelem 
    list. Also, it restores current thread's priority into the maximum
-   among those remaining in the donator list and previous priority of
+   among those remaining in the donorelem list and previous priority of
    current thread. */
 void
 thread_restore (struct lock *lock)
 {
   struct list_elem *e;
   struct thread *t, *max, *cur = thread_current ();
-  struct list *li = &(cur->donator_list);
+  struct list *li = &(cur->donors);
 
   if (list_empty(li))
     {
-      cur->priority = cur->prev_priority;
+      cur->priority = cur->original;
       return;
     }
 
   for (e = list_begin (li); e != list_end (li); )
     {
-      t = list_entry (e, struct thread, donator);
+      t = list_entry (e, struct thread, donorelem);
 
-      if (t->lock_waiting != NULL && t->lock_waiting == lock)
+      if (t->waiting != NULL && t->waiting == lock)
         e = list_remove (e);
       else
         e = list_next (e);
     }
 
   max = list_entry (list_max (li, thread_compare, NULL), struct thread, 
-                    donator);
+                    donorelem);
 
-  if (max->priority > cur->prev_priority)
+  if (max->priority > cur->original)
     cur->priority = max->priority;
   else
-    cur->priority = cur->prev_priority;
+    cur->priority = cur->original;
 }
 
 /* Compare two list elements that belong to thread according to their 
