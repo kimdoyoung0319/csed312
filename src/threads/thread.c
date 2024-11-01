@@ -852,10 +852,11 @@ mlfqs_update (void)
   if (timer_ticks () % TIME_SLICE == 0)
     update_priorities ();
   
-  if (timer_ticks () % TIMER_FREQ == 0) {
-    update_recent_cpu ();
-    update_load_avg ();
-  }
+  if (timer_ticks () % TIMER_FREQ == 0) 
+    {
+      update_recent_cpu ();
+      update_load_avg ();
+    }
 }
 
 /* Organizes threads into ready queues according to their priorities.
