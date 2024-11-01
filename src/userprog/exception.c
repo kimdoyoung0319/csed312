@@ -108,6 +108,8 @@ kill (struct intr_frame *f)
     }
 }
 
+/* TODO: Modify page fault handler to handle the situation of invalid user 
+         pointer passed to the kernel. */
 /* Page fault handler.  This is a skeleton that must be filled in
    to implement virtual memory.  Some solutions to project 2 may
    also require modifying this code.

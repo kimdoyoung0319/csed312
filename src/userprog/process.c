@@ -76,19 +76,35 @@ start_process (void *file_name_)
   NOT_REACHED ();
 }
 
+// TODO: Is it possible to wait again on waited thread?
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread *child, *cur = thread_current ();
+  struct list_elem *e = list_begin (&cur->children);
+
+  enum intr_level old_level = intr_disable ();
+
+  while (e != list_end (&cur->children) && child->tid != child_tid)
+    {
+      child = list_entry (e, struct thread, childelem);
+      e = list_next (e);
+    }
+
+  if (child->tid != child_tid)
+    return -1;
+
+  child->waited = true;
+  thread_block ();
+  intr_set_level (old_level);
+
+  return cur->status;
 }
 
 /* Free the current process's resources. */

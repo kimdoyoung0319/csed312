@@ -250,7 +250,7 @@ lock_acquire (struct lock *lock)
   if (!thread_mlfqs && holder != NULL && cur->priority > holder->priority)
     {
       cur->waiting = lock;
-      list_push_back (&holder->donators, &cur->donatorelem);
+      list_push_back (&holder->donors, &cur->donorelem);
       thread_donate (holder, 1);
     }
 

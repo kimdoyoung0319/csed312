@@ -1,6 +1,10 @@
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
+/* To shut linter up during development. If Pintos automatically defines 
+   USERPROG during compile, delete below. */
+#define USERPROG
+
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
@@ -106,11 +110,17 @@ struct thread
     struct list donors;                 /* List of threads that have donated. */
     struct list_elem donorelem;         /* List element for donating. */
     struct lock *waiting;               /* Lock this thread is waiting for. */
-    int original;                       /* Previous priority before donation. */
+    int original;                       /* Original priority before donation. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    int status;                         /* Status code of exited thread. */
+    struct thread *parent;              /* Thread of the parent process. */
+    struct list children;               /* List of child processes. */
+    struct list_elem childelem;         /* List element for child list. */
+    bool orphaned;                      /* Has its parent process exited? */
+    bool waited;                        /* Is its parent waiting on this? */
 #endif
 
     /* Owned by thread.c. */
