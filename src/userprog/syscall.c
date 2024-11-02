@@ -10,7 +10,7 @@
 #include "userprog/process.h"
 
 static void syscall_handler (struct intr_frame *);
-static int dereference (const uint8_t *, int, int);
+static int dereference (const int8_t *, int, int);
 static struct file *retrieve_fp (int);
 
 static void halt (void);
@@ -36,33 +36,30 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  uint32_t retval;
-  int syscall_number = dereference ((uint8_t *) f->esp, 0, 4);
+  int syscall_number = dereference ((int8_t *) f->esp, 0, 4);
 
   switch (syscall_number) {
     case SYS_HALT: halt (); break; 
     case SYS_EXIT: exit (f->esp); break;   
-    case SYS_EXEC: retval = exec (f->esp); break;
-    case SYS_WAIT: retval = wait (f->esp); break;
-    case SYS_CREATE: retval = create (f->esp); break;
-    case SYS_REMOVE: retval = remove (f->esp); break;
-    case SYS_OPEN: retval = open (f->esp); break;
-    case SYS_FILESIZE: retval = filesize (f->esp); break;
-    case SYS_READ: retval = read (f->esp); break;
-    case SYS_WRITE: retval = write (f->esp); break;  
+    case SYS_EXEC: f->eax = exec (f->esp); break;
+    case SYS_WAIT: f->eax = wait (f->esp); break;
+    case SYS_CREATE: f->eax = create (f->esp); break;
+    case SYS_REMOVE: f->eax = remove (f->esp); break;
+    case SYS_OPEN: f->eax = open (f->esp); break;
+    case SYS_FILESIZE: f->eax = filesize (f->esp); break;
+    case SYS_READ: f->eax = read (f->esp); break;
+    case SYS_WRITE: f->eax = write (f->esp); break;  
     case SYS_SEEK: seek (f->esp); break;   
-    case SYS_TELL: retval = tell (f->esp); break;   
+    case SYS_TELL: f->eax = tell (f->esp); break;   
     case SYS_CLOSE: close (f->esp); break;
   }
-
-  f->eax = retval;
 }
 
 /* Dereference pointer BASE + OFFSET * INDEX, with a validity test. Returns
    int-sized chunk starting from BASE + OFFSET * INDEX if it passes the test. 
    Else, terminates current process. */
 static int
-dereference (const uint8_t *base, int offset, int index)
+dereference (const int8_t *base, int offset, int index)
 {
   void *uaddr = (void *) (base + offset * index);
 
@@ -70,6 +67,8 @@ dereference (const uint8_t *base, int offset, int index)
     return *((int *) uaddr);
   else
     process_exit (-1);
+
+  NOT_REACHED ();
 }
 
 /* Retrieve file pointer from file descriptor, FD. Returns NULL if it has
@@ -106,7 +105,7 @@ halt (void)
 static void
 exit (void *esp)
 {
-  int status = dereference (esp, 1, 4);
+  int status = dereference ((int8_t *) esp, 1, 4);
   process_exit (status);
 }
 
@@ -114,11 +113,11 @@ exit (void *esp)
 static uint32_t
 exec (void *esp)
 {
-  char *file = (char *) dereference (esp, 1, 4);
+  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
 
   /* Checks if all addresses for characters of FILE is valid. This may not be 
      needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; 0xFF & dereference (file, i, 1) != '\0'; i++);
+  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
 
   return (uint32_t) process_execute (file);
 }
@@ -127,7 +126,7 @@ exec (void *esp)
 static uint32_t
 wait (void *esp)
 {
-  pid_t pid = (pid_t) dereference (esp, 1, 4);
+  tid_t pid = dereference ((int8_t *) esp, 1, 4);
   return (uint32_t) process_wait (pid);
 }
 
@@ -135,12 +134,12 @@ wait (void *esp)
 static uint32_t
 create (void *esp)
 {
-  char *file = (char *) dereference (esp, 1, 4);
-  unsigned initial_size = (unsigned) dereference (esp, 2, 4);  
+  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
+  unsigned initial_size = (unsigned) dereference ((int8_t *) esp, 2, 4);  
 
   /* Checks if all addresses for characters of FILE is valid. This may not be 
      needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; 0xFF & dereference (file, i, 1) != '\0'; i++);
+  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
 
   return (uint32_t) filesys_create (file, initial_size);
 }
@@ -149,11 +148,11 @@ create (void *esp)
 static uint32_t
 remove (void *esp)
 {
-  char *file = (char *) dereference (esp, 1, 4);
+  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
 
   /* Checks if all addresses for characters of FILE is valid. This may not be 
      needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; 0xFF & dereference (file, i, 1) != '\0'; i++);
+  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
 
   return (uint32_t) filesys_remove (file);
 }
@@ -162,11 +161,11 @@ remove (void *esp)
 static uint32_t
 open (void *esp)
 {
-  char *file = (char *) dereference (esp, 1, 4);
+  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
 
   /* Checks if all addresses for characters of FILE is valid. This may not be 
      needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; 0xFF & dereference (file, i, 1) != '\0'; i++);
+  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
 
   return (uint32_t) filesys_open (file)->fd;
 }
@@ -176,7 +175,7 @@ open (void *esp)
 static uint32_t 
 filesize (void *esp)
 {
-  int fd = dereference (esp, 1, 4);
+  int fd = dereference ((int8_t *) esp, 1, 4);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -190,9 +189,9 @@ filesize (void *esp)
 static uint32_t
 read (void *esp)
 {
-  int fd = dereference (esp, 1, 4);
-  void *buffer = dereference (esp, 2, 4);
-  unsigned size = dereference (esp, 3, 4);
+  int fd = dereference ((int8_t *) esp, 1, 4);
+  void *buffer = (void *) dereference ((int8_t *) esp, 2, 4);
+  unsigned size = dereference ((int8_t *) esp, 3, 4);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -209,9 +208,9 @@ read (void *esp)
 static uint32_t
 write (void *esp)
 {
-  int fd = dereference (esp, 1, 4);
-  const void *buffer = dereference (esp, 2, 4);
-  unsigned size = dereference (esp, 3, 4);
+  int fd = dereference ((int8_t *) esp, 1, 4);
+  void *buffer = (void *) dereference ((int8_t *) esp, 2, 4);
+  unsigned size = dereference ((int8_t *) esp, 3, 4);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -228,12 +227,12 @@ write (void *esp)
 static void
 seek (void *esp)
 {
-  int fd = dereference (esp, 1, 4);
-  unsigned position = dereference (esp, 2, 4);
+  int fd = dereference ((int8_t *) esp, 1, 4);
+  unsigned position = dereference ((int8_t *) esp, 2, 4);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
-    return (uint32_t) -1;
+    return;
 
   file_seek (fp, position);
 }
@@ -243,7 +242,7 @@ seek (void *esp)
 static uint32_t
 tell (void *esp)
 {
-  int fd = dereference (esp, 1, 4);
+  int fd = dereference ((int8_t *) esp, 1, 4);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -257,7 +256,7 @@ tell (void *esp)
 static void
 close (void *esp)
 {
-  int fd = dereference (esp, 1, 4);
+  int fd = dereference ((int8_t *) esp, 1, 4);
   struct file *fp = retrieve_fp (fd);
 
   file_close (fp);
