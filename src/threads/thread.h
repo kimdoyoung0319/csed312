@@ -1,10 +1,6 @@
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
-/* To shut linter up during development. If Pintos automatically defines 
-   USERPROG during compile, delete below. */
-#define USERPROG
-
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>

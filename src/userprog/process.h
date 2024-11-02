@@ -13,5 +13,4 @@ void process_destory (void);
 void process_activate (void);
 void process_exit (int);
 
-
 #endif /* userprog/process.h */
