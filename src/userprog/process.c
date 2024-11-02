@@ -76,7 +76,6 @@ start_process (void *file_name_)
   NOT_REACHED ();
 }
 
-// TODO: Is it possible to wait again on waited thread?
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
@@ -86,7 +85,7 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid) 
 {
-  struct thread *child, *cur = thread_current ();
+  struct thread *child = NULL, *cur = thread_current ();
   struct list_elem *e = list_begin (&cur->children);
 
   enum intr_level old_level = intr_disable ();
@@ -97,19 +96,19 @@ process_wait (tid_t child_tid)
       e = list_next (e);
     }
 
-  if (child->tid != child_tid)
+  if (child == NULL || child->tid != child_tid || child->waited)
     return -1;
 
   child->waited = true;
   thread_block ();
   intr_set_level (old_level);
 
-  return cur->status;
+  return cur->child_status;
 }
 
 /* Free the current process's resources. */
 void
-process_exit (void)
+process_destroy (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
@@ -146,6 +145,42 @@ process_activate (void)
   /* Set thread's kernel stack for use in processing
      interrupts. */
   tss_update ();
+}
+
+/* TODO: Clean up acquired locks when terminating. */
+/* Exits current process with exit code of STATUS. */
+void 
+process_exit (int status)
+{
+  struct file *fp;
+  struct list_elem *e, *next;
+  struct thread *cur = thread_current (), *par = cur->parent;
+
+  /* This is to maintain consistency of thread structures. Interrupt will be 
+     enabled after thread_exit() call which causes context switch. */
+  intr_disable ();
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
+    list_entry (e, struct thread, childelem)->parent = NULL;
+
+  for (e = list_begin (&cur->opened); e != list_end (&cur->opened); )
+    {
+      next = list_next (e);
+      fp = list_entry (e, struct file, elem);
+      file_close (fp);
+      e = next;
+    }
+
+  if (cur->waited && par != NULL)
+    {
+      par->child_status = status;
+      thread_unblock (par);
+    }
+
+  printf ("%s: exit(%d)\n", cur->name, status);
+  list_remove (&cur->childelem);
+  thread_exit ();
 }
 
 /* We load ELF binaries.  The following definitions are taken

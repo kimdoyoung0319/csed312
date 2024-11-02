@@ -2,14 +2,13 @@
 #include <debug.h>
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
+#include "threads/synch.h"
 
-/* An open file. */
-struct file 
-  {
-    struct inode *inode;        /* File's inode. */
-    off_t pos;                  /* Current position. */
-    bool deny_write;            /* Has file_deny_write() been called? */
-  };
+/* Lock used by allocate_fd(). */
+static struct lock fd_lock;
+
+static int allocate_fd (void);
 
 /* Opens a file for the given INODE, of which it takes ownership,
    and returns the new file.  Returns a null pointer if an
@@ -17,12 +16,15 @@ struct file
 struct file *
 file_open (struct inode *inode) 
 {
+  struct list *opened = &thread_current ()->opened;
   struct file *file = calloc (1, sizeof *file);
   if (inode != NULL && file != NULL)
     {
       file->inode = inode;
       file->pos = 0;
       file->deny_write = false;
+      file->fd = allocate_fd ();
+      list_push_back (opened, &file->elem);
       return file;
     }
   else
@@ -47,6 +49,7 @@ file_close (struct file *file)
 {
   if (file != NULL)
     {
+      list_remove (&file->elem);
       file_allow_write (file);
       inode_close (file->inode);
       free (file); 
@@ -165,4 +168,19 @@ file_tell (struct file *file)
 {
   ASSERT (file != NULL);
   return file->pos;
+}
+
+/* Returns fresh file descriptor to represent a newly opened file. */
+static int
+allocate_fd (void)
+{
+  /* File descriptor of 0 and 1 are reserved for stdin and stdout. */
+  static int next_fd = 2;
+  int fd;
+
+  lock_acquire (&fd_lock);
+  fd = next_fd++;
+  lock_release (&fd_lock);
+
+  return fd;
 }

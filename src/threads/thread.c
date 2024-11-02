@@ -338,7 +338,7 @@ thread_exit (void)
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
-  process_exit ();
+  process_destroy ();
 #endif
 ;
   /* Remove thread from all threads list, set our status to dying,
@@ -543,6 +543,7 @@ static void
 init_thread (struct thread *t, const char *name, int priority)
 {
   enum intr_level old_level;
+  struct thread *par = thread_current ();
 
   ASSERT (t != NULL);
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
@@ -566,10 +567,19 @@ init_thread (struct thread *t, const char *name, int priority)
   else
     t->priority = priority;
   
-  /* Initialize donorelem list. */
+  /* Initialize lists to manage donators, childrens, and opened files. */
   list_init (&t->donors);
-  t->original = priority;
+  list_init (&t->children);
+  list_init (&t->opened);
 
+  /* Initialize informations for priority donation and basic process 
+     hierachy. */
+  t->original = t->priority;
+  t->parent = par;
+  t->waited = false;
+
+  /* Append new thread to the child list of current thread. */
+  list_push_back (&par->children, &t->childelem);
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

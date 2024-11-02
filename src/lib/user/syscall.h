@@ -3,10 +3,7 @@
 
 #include <stdbool.h>
 #include <debug.h>
-
-/* Process identifier. */
-typedef int pid_t;
-#define PID_ERROR ((pid_t) -1)
+#include "userprog/process.h"
 
 /* Map region identifier. */
 typedef int mapid_t;

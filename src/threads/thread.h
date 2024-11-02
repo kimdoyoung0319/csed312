@@ -115,11 +115,15 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    int status;                         /* Status code of exited thread. */
+
+    /* Owned by userprog/syscall.c. */
+    int child_status;                         /* Status code of exited thread. */
     struct thread *parent;              /* Thread of the parent process. */
+    struct list opened;                 /* List of opened files. */
+
+    /* Shared between userprog/process.c and userprog/syscall.c. */
     struct list children;               /* List of child processes. */
     struct list_elem childelem;         /* List element for child list. */
-    bool orphaned;                      /* Has its parent process exited? */
     bool waited;                        /* Is its parent waiting on this? */
 #endif
 
