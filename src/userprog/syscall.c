@@ -5,13 +5,17 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "devices/shutdown.h"
+#include "devices/input.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "userprog/process.h"
 
+#define WORD_SIZE (sizeof (intptr_t))
+
 static void syscall_handler (struct intr_frame *);
-static int dereference (const int8_t *, int, int);
+static uint32_t dereference (const void *, int, int);
 static struct file *retrieve_fp (int);
+static void verify_string (const char *);
 
 static void halt (void);
 static void exit (void *);
@@ -36,7 +40,7 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  int syscall_number = dereference ((int8_t *) f->esp, 0, 4);
+  int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
 
   switch (syscall_number) {
     case SYS_HALT: halt (); break; 
@@ -56,15 +60,16 @@ syscall_handler (struct intr_frame *f)
 }
 
 /* Dereference pointer BASE + OFFSET * INDEX, with a validity test. Returns
-   int-sized chunk starting from BASE + OFFSET * INDEX if it passes the test. 
+   4 byte chunk starting from BASE + OFFSET * INDEX if it passes the test. 
    Else, terminates current process. */
-static int
-dereference (const int8_t *base, int offset, int index)
+static uint32_t
+dereference (const void *base, int offset, int index)
 {
-  void *uaddr = (void *) (base + offset * index);
+  uint8_t *base_ = base;
+  void *uaddr = (void *) (base_ + offset * index);
 
   if (is_user_vaddr (uaddr))
-    return *((int *) uaddr);
+    return *((uint32_t *) uaddr);
   else
     process_exit (-1);
 
@@ -78,19 +83,30 @@ static struct file *
 retrieve_fp (int fd)
 {
   struct list *opened = &thread_current ()->opened;
-  struct list_elem *e = list_begin (opened);
   struct file *fp = NULL;
+  struct list_elem *e;
 
-  while (e != list_end (opened) && fp->fd != fd)
+  for (e = list_begin (opened); e != list_end (opened); e = list_next (e))
     {
-      fp = list_entry (e, struct file, elem); 
-      e = list_next (e);
+      fp = list_entry (e, struct file, elem);
+      if (fp->fd == fd)
+        break;
     }
   
   if (fp == NULL || fp->fd != fd)
     return NULL;
   
   return fp;
+}
+
+/* Verifies null-terminated STR by dereferencing each character in STR until
+   it reaches null character. If succeed, it would normally return. Else, it
+   would cause page fault and eventually terminate faulting user process. */
+static void
+verify_string (const char *str)
+{
+  for (int i = 0; (0xFF & dereference ((void *) str, i, 1)) != '\0';
+       i++);
 }
 
 /* System call handler for halt(). */
@@ -105,7 +121,7 @@ halt (void)
 static void
 exit (void *esp)
 {
-  int status = dereference ((int8_t *) esp, 1, 4);
+  int status = (int) dereference (esp, 1, WORD_SIZE);
   process_exit (status);
 }
 
@@ -113,11 +129,8 @@ exit (void *esp)
 static uint32_t
 exec (void *esp)
 {
-  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
-
-  /* Checks if all addresses for characters of FILE is valid. This may not be 
-     needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+  verify_string (file);
 
   return (uint32_t) process_execute (file);
 }
@@ -126,20 +139,17 @@ exec (void *esp)
 static uint32_t
 wait (void *esp)
 {
-  tid_t pid = dereference ((int8_t *) esp, 1, 4);
-  return (uint32_t) process_wait (pid);
+  tid_t tid = (tid_t) dereference (esp, 1, WORD_SIZE);
+  return (uint32_t) process_wait (tid);
 }
 
 /* System call handler for create(). */
 static uint32_t
 create (void *esp)
 {
-  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
-  unsigned initial_size = (unsigned) dereference ((int8_t *) esp, 2, 4);  
-
-  /* Checks if all addresses for characters of FILE is valid. This may not be 
-     needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+  unsigned initial_size = dereference (esp, 2, WORD_SIZE);  
+  verify_string (file);
 
   return (uint32_t) filesys_create (file, initial_size);
 }
@@ -148,11 +158,8 @@ create (void *esp)
 static uint32_t
 remove (void *esp)
 {
-  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
-
-  /* Checks if all addresses for characters of FILE is valid. This may not be 
-     needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+  verify_string (file);
 
   return (uint32_t) filesys_remove (file);
 }
@@ -161,11 +168,8 @@ remove (void *esp)
 static uint32_t
 open (void *esp)
 {
-  char *file = (char *) dereference ((int8_t *) esp, 1, 4);
-
-  /* Checks if all addresses for characters of FILE is valid. This may not be 
-     needed in order to pass the test. If so, just omit below. */
-  for (int i = 0; (0xFF & dereference ((int8_t *) file, i, 1)) != '\0'; i++);
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+  verify_string (file);
 
   return (uint32_t) filesys_open (file)->fd;
 }
@@ -175,7 +179,7 @@ open (void *esp)
 static uint32_t 
 filesize (void *esp)
 {
-  int fd = dereference ((int8_t *) esp, 1, 4);
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -189,16 +193,23 @@ filesize (void *esp)
 static uint32_t
 read (void *esp)
 {
-  int fd = dereference ((int8_t *) esp, 1, 4);
-  void *buffer = (void *) dereference ((int8_t *) esp, 2, 4);
-  unsigned size = dereference ((int8_t *) esp, 3, 4);
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *buffer = (void *) dereference (esp, 2, WORD_SIZE);
+  unsigned pos = 0, size = dereference (esp, 3, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
+
+  /* Checks if all addresses of BUFFER within SIZE is in user address space. */
+  dereference (buffer, size, 1);
+
+  if (fd == STDIN_FILENO)
+    {
+      while (pos < size)
+        ((char *) buffer)[pos++] = input_getc ();
+      return (uint32_t) size;
+    }
 
   if (fp == NULL)
     return (uint32_t) -1;
-  
-  /* Checks if all addresses of BUFFER within SIZE is in user address space. */
-  dereference (buffer, size, 1);
 
   return (uint32_t) file_read (fp, buffer, size);
 }
@@ -208,10 +219,16 @@ read (void *esp)
 static uint32_t
 write (void *esp)
 {
-  int fd = dereference ((int8_t *) esp, 1, 4);
-  void *buffer = (void *) dereference ((int8_t *) esp, 2, 4);
-  unsigned size = dereference ((int8_t *) esp, 3, 4);
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *buffer = (void *) dereference (esp, 2, WORD_SIZE);
+  unsigned size = dereference (esp, 3, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
+
+  if (fd == STDOUT_FILENO)
+    {
+      putbuf ((char *) buffer, size);
+      return (uint32_t) size;
+    }
 
   if (fp == NULL)
     return (uint32_t) -1;
@@ -227,8 +244,8 @@ write (void *esp)
 static void
 seek (void *esp)
 {
-  int fd = dereference ((int8_t *) esp, 1, 4);
-  unsigned position = dereference ((int8_t *) esp, 2, 4);
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  unsigned position = dereference (esp, 2, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -242,7 +259,7 @@ seek (void *esp)
 static uint32_t
 tell (void *esp)
 {
-  int fd = dereference ((int8_t *) esp, 1, 4);
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
@@ -256,7 +273,7 @@ tell (void *esp)
 static void
 close (void *esp)
 {
-  int fd = dereference ((int8_t *) esp, 1, 4);
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   file_close (fp);
