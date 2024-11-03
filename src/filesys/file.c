@@ -10,6 +10,13 @@ static struct lock fd_lock;
 
 static int allocate_fd (void);
 
+/* Initialize opened file managing system. */
+void
+file_init (void) 
+{
+  lock_init (&fd_lock);
+}
+
 /* Opens a file for the given INODE, of which it takes ownership,
    and returns the new file.  Returns a null pointer if an
    allocation fails or if INODE is null. */

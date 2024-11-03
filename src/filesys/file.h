@@ -17,6 +17,9 @@ struct file
     struct list_elem elem;     /* List element for opened file list. */
   };
 
+/* Initialization. */
+void file_init (void);
+
 /* Opening and closing files. */
 struct file *file_open (struct inode *);
 struct file *file_reopen (struct file *);

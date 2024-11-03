@@ -86,14 +86,16 @@ int
 process_wait (tid_t child_tid) 
 {
   struct thread *child = NULL, *cur = thread_current ();
-  struct list_elem *e = list_begin (&cur->children);
+  struct list_elem *e;
 
   enum intr_level old_level = intr_disable ();
 
-  while (e != list_end (&cur->children) && child->tid != child_tid)
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
     {
       child = list_entry (e, struct thread, childelem);
-      e = list_next (e);
+      if (child->tid == child_tid)
+        break;
     }
 
   if (child == NULL || child->tid != child_tid || child->waited)
@@ -488,7 +490,8 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        /* TODO: This shall be modified when implementing argument passing. */
+        *esp = PHYS_BASE - 12;
       else
         palloc_free_page (kpage);
     }

@@ -543,7 +543,6 @@ static void
 init_thread (struct thread *t, const char *name, int priority)
 {
   enum intr_level old_level;
-  struct thread *par = thread_current ();
 
   ASSERT (t != NULL);
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
@@ -567,19 +566,25 @@ init_thread (struct thread *t, const char *name, int priority)
   else
     t->priority = priority;
   
-  /* Initialize lists to manage donators, childrens, and opened files. */
+  /* Initialize list to manage donators and store original priority value. */
   list_init (&t->donors);
+  t->original = t->priority;
+
+#ifdef USERPROG
+  /* There is no such thing as parents for an initial thread. */
+  struct thread *par = (t == initial_thread) ? NULL : thread_current ();
+
+  /* Initialize list to manage children processes and opened files. */
   list_init (&t->children);
   list_init (&t->opened);
 
-  /* Initialize informations for priority donation and basic process 
-     hierachy. */
-  t->original = t->priority;
+  /* Add newly created thread to child list of its parent. */
+  if (par != NULL)
+    list_push_back (&par->children, &t->childelem);
+
   t->parent = par;
   t->waited = false;
-
-  /* Append new thread to the child list of current thread. */
-  list_push_back (&par->children, &t->childelem);
+#endif
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
@@ -745,7 +750,10 @@ thread_check (void)
   else
     max = max_priority ();
 
-  if (max > cur->priority)
+  /* Note that a thread cannot yield in external interrupt handling context. */
+  if (max > cur->priority && intr_context ())
+    intr_yield_on_return ();
+  else if (max > cur->priority)
     thread_yield ();
 }
 
