@@ -20,37 +20,38 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void *push (void *, void *, int);
 
 /* Starts a new thread running a user program loaded from
-   FILENAME.  The new thread may be scheduled (and may even exit)
+   CMD_LINE.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *cmd_line) 
 {
-  char *fn_copy;
+  char *cmd_line_copy;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
+  /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  cmd_line_copy = palloc_get_page (0);
+  if (cmd_line_copy == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (cmd_line_copy, cmd_line, PGSIZE);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (cmd_line, PRI_DEFAULT, start_process, cmd_line_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (cmd_line_copy); 
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *cmd_line_)
 {
-  char *file_name = file_name_;
+  char *cmd_line = cmd_line_;
   struct intr_frame if_;
   bool success;
 
@@ -59,10 +60,26 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (cmd_line, &if_.eip, &if_.esp);
+
+  /* TODO: This is dummy argument passing routine for test. It should be 
+           replaced by real argument passing routine. */
+  void *esp = if_.esp;
+  char **argv, *argv0;
+  int argc = 1, len = strlen (cmd_line), 
+      padding = sizeof (int) - (len % sizeof (int));
+
+  esp = argv0 = push (esp, cmd_line_, len);
+  esp = push (esp, NULL, padding);
+  esp = push (esp, NULL, sizeof (char *));
+  esp = argv = push (esp, &argv0, sizeof (char *));
+  esp = push (esp, &argv, sizeof (char **));
+  esp = push (esp, &argc, sizeof (int));
+  esp = push (esp, NULL, sizeof (void (*) (void)));
+  if_.esp = esp;
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  palloc_free_page (cmd_line);
   if (!success) 
     thread_exit ();
 
@@ -490,7 +507,7 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        /* TODO: This shall be modified when implementing argument passing. */
+        /* TODO: Implement argument push. */
         *esp = PHYS_BASE - 12;
       else
         palloc_free_page (kpage);
@@ -516,4 +533,23 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+/* Pushes SIZE bytes of data from SRC at the top of the stack specified
+   with TOP. TOP must be a pointer to somewhere in user virtual address 
+   space. Returns an address that refers to new top of the stack. If SRC is
+   NULL, then pushes SIZE bytes of 0s on the stack. */
+static void *
+push (void *top, void *src, int size)
+{
+  ASSERT (is_user_vaddr (top));
+
+  char *new = (char *) top - size;
+
+  if (src == NULL)
+    memset (new, 0, size);
+  else
+    memcpy ((void *) new, src, size);
+
+  return (void *) new;
 }
