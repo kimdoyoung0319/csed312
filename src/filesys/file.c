@@ -1,3 +1,6 @@
+/* TODO: Check the scenario where an open file was removed. According to the
+         document, an open file should be able to be used even if it's removed
+         until it become completely closed.*/
 #include "filesys/file.h"
 #include <debug.h>
 #include "filesys/inode.h"
