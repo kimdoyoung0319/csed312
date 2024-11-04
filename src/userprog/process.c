@@ -1,3 +1,4 @@
+/* TODO: Disable write on opened executables. */
 #include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
@@ -18,6 +19,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+#define WORD_SIZE (sizeof (intptr_t))
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static void *push (void *, void *, int);
@@ -29,7 +32,10 @@ static void *push (void *, void *, int);
 tid_t
 process_execute (const char *cmd_line) 
 {
-  char *cmd_line_copy;
+  int i = 0;
+  char *cmd_line_copy, *pos, *token, **argv;
+  struct file *fp;
+  bool file_not_found;
   tid_t tid;
 
   /* Make a copy of CMD_LINE.
@@ -39,19 +45,45 @@ process_execute (const char *cmd_line)
     return TID_ERROR;
   strlcpy (cmd_line_copy, cmd_line, PGSIZE);
 
+  /* Tokenize the copy of CMD_LINE, 
+     and stores each address of tokenized string in ARGV. */
+  argv = palloc_get_page (PAL_ZERO);
+  if (argv == NULL)
+    return TID_ERROR;
+  for (token = strtok_r (cmd_line_copy, " ", &pos); token != NULL;
+       token = strtok_r (NULL, " ", &pos))
+    argv[i++] = token;
+
+  /* Checks whether the file is really present or not. */
+  file_not_found = (fp = filesys_open (argv[0])) == NULL;
+  file_close (fp);
+
+  if (file_not_found)
+    {
+      palloc_free_page (cmd_line_copy);
+      palloc_free_page (argv);
+      return TID_ERROR;
+    }
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (cmd_line, PRI_DEFAULT, start_process, cmd_line_copy);
+  tid = thread_create (argv[0], PRI_DEFAULT, start_process, argv);
   if (tid == TID_ERROR)
-    palloc_free_page (cmd_line_copy); 
+    {
+      palloc_free_page (cmd_line_copy); 
+      palloc_free_page (argv);
+    }
+
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *cmd_line_)
+start_process (void *argv_)
 {
-  char *cmd_line = cmd_line_;
+  int argc, padding, len, i;
+  char **argv = argv_;
+  void *esp, *cmd_line = pg_round_down (argv[0]);
   struct intr_frame if_;
   bool success;
 
@@ -60,25 +92,40 @@ start_process (void *cmd_line_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (cmd_line, &if_.eip, &if_.esp);
+  success = load (argv[0], &if_.eip, &if_.esp);
 
-  /* TODO: This is dummy argument passing routine for test. It should be 
-           replaced by real argument passing routine. */
-  void *esp = if_.esp;
-  char **argv, *argv0;
-  int argc = 1, len = strlen (cmd_line), 
-      padding = sizeof (int) - (len % sizeof (int));
+  /* Get ARGC. */
+  for (argc = 0; argv[argc] != NULL; argc++);
 
-  esp = argv0 = push (esp, cmd_line_, len);
+  /* Push arguments in ARGV in reverse order, calculate padding, and
+     store pushed arguments's address on ARGV since original address
+     is no longer needed. */
+  padding = 0;
+  esp = if_.esp;
+  for (i = argc - 1; i >= 0; i--)
+    {
+      len = strlen (argv[i]) + 1;
+      esp = push (esp, argv[i], len);
+      argv[i] = esp;
+      padding = WORD_SIZE - (len + padding) % WORD_SIZE;
+    }
+  
+  /* Push padding and null pointer indicating the end of argument vector. */
   esp = push (esp, NULL, padding);
   esp = push (esp, NULL, sizeof (char *));
-  esp = argv = push (esp, &argv0, sizeof (char *));
-  esp = push (esp, &argv, sizeof (char **));
+
+  /* Push argument vector. */
+  for (i = argc - 1; i >= 0; i--)
+    esp = push (esp, &argv[i], sizeof (char *));
+  esp = push (esp, &esp, sizeof (char **));
+
+  /* Push ARGC and dummy return address. */
   esp = push (esp, &argc, sizeof (int));
   esp = push (esp, NULL, sizeof (void (*) (void)));
   if_.esp = esp;
 
   /* If load failed, quit. */
+  palloc_free_page (argv);
   palloc_free_page (cmd_line);
   if (!success) 
     thread_exit ();
@@ -507,8 +554,7 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        /* TODO: Implement argument push. */
-        *esp = PHYS_BASE - 12;
+        *esp = PHYS_BASE;
       else
         palloc_free_page (kpage);
     }
@@ -542,7 +588,7 @@ install_page (void *upage, void *kpage, bool writable)
 static void *
 push (void *top, void *src, int size)
 {
-  ASSERT (is_user_vaddr (top));
+  ASSERT (is_user_vaddr (top) || top == PHYS_BASE);
 
   char *new = (char *) top - size;
 
