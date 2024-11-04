@@ -113,7 +113,7 @@ struct thread
     uint32_t *pagedir;                  /* Page directory. */
 
     /* Owned by userprog/syscall.c. */
-    int child_status;                         /* Status code of exited thread. */
+    int child_status;                   /* Status code of exited thread. */
     struct thread *parent;              /* Thread of the parent process. */
     struct list opened;                 /* List of opened files. */
 
