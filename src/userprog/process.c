@@ -1,4 +1,3 @@
-/* TODO: Disable write on opened executables. */
 #include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
@@ -226,10 +225,12 @@ process_exit (int status)
      enabled after thread_exit() call which causes context switch. */
   intr_disable ();
 
+  /* Exiting process's children are orphaned. */
   for (e = list_begin (&cur->children); e != list_end (&cur->children);
        e = list_next (e))
     list_entry (e, struct thread, childelem)->parent = NULL;
 
+  /* Close opened files. */
   for (e = list_begin (&cur->opened); e != list_end (&cur->opened); )
     {
       next = list_next (e);
@@ -238,6 +239,7 @@ process_exit (int status)
       e = next;
     }
 
+  /* If this process's parent is wating on it, give it exit code. */
   if (cur->waited && par != NULL)
     {
       par->child_status = status;
@@ -345,6 +347,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+  file_deny_write (file);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -429,7 +432,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+    file_close (file);
+
   return success;
 }
 
