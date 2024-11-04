@@ -5,6 +5,8 @@
 #include "filesys/off_t.h"
 #include "lib/kernel/list.h"
 
+#define FD_ERROR -1
+
 struct inode;
 
 /* An open file. */
