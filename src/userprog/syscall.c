@@ -116,8 +116,7 @@ halt (void)
   shutdown_power_off ();  
 }
 
-/* System call handler for exit(). If ESP is a null pointer, it automatically
-   sets the exit status passed to the parent thread as -1. */
+/* System call handler for exit(). */
 static void
 exit (void *esp)
 {
@@ -129,10 +128,10 @@ exit (void *esp)
 static uint32_t
 exec (void *esp)
 {
-  char *file = (char *) dereference (esp, 1, WORD_SIZE);
-  verify_string (file);
+  char *cmd_line = (char *) dereference (esp, 1, WORD_SIZE);
+  verify_string (cmd_line);
 
-  return (uint32_t) process_execute (file);
+  return (uint32_t) process_execute (cmd_line);
 }
 
 /* System call handler for wait(). */
