@@ -65,7 +65,7 @@ syscall_handler (struct intr_frame *f)
 static uint32_t
 dereference (const void *base, int offset, int index)
 {
-  uint8_t *base_ = base;
+  const uint8_t *base_ = base;
   void *uaddr = (void *) (base_ + offset * index);
 
   if (is_user_vaddr (uaddr))
@@ -170,8 +170,12 @@ open (void *esp)
 {
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
   verify_string (file);
+  struct file *fp = filesys_open (file);
 
-  return (uint32_t) filesys_open (file)->fd;
+  if (fp == NULL)
+    return (uint32_t) FD_ERROR;
+
+  return (uint32_t) fp->fd;
 }
 
 /* System call handler for filesize(). Return -1 if given file descriptor is 
