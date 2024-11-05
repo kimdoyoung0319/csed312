@@ -20,37 +20,42 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void arg_parse (char *input, char **argv, int *argc);
+static bool setup_intr_stack (void **esp, const char **argv, const int argc);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *input) 
 {
-  char *fn_copy;
+  char *input_copy, *ptr, *file_name;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  input_copy = palloc_get_page (0);
+  if (input_copy == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (input_copy, input, PGSIZE);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  file_name = strtok_r (input_copy, " ", &ptr);
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, input_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (input_copy); 
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *input_)
 {
-  char *file_name = file_name_;
+  char *input = input_;
+  char **argv;
+  int argc;
   struct intr_frame if_;
   bool success;
 
@@ -59,12 +64,35 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
-  palloc_free_page (file_name);
-  if (!success) 
+  argv = palloc_get_page (0);
+  if (argv == NULL)
+  {
+    palloc_free_page (input);
     thread_exit ();
+
+    NOT_REACHED ();
+  }
+  arg_parse (input, argv, &argc);
+
+  success = load (argv[0], &if_.eip, &if_.esp);
+  palloc_free_page (input);
+  if (!success) 
+  {
+    palloc_free_page (argv);
+    thread_exit ();
+
+    NOT_REACHED ();
+  }
+
+  success = setup_intr_stack (&if_.esp, argv, &argc);
+  palloc_free_page (argv);
+  if (!success)
+  {
+    thread_exit ();
+
+    NOT_REACHED ();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -462,4 +490,76 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+
+static void
+arg_parse (char *input, char **argv, int *argc_)
+{
+  int *argc = argc_;
+  char *token, *ptr;
+
+  for (token = strtok_r (input, " ", &ptr); token != NULL;
+      token = strtok_r (NULL, " ", &ptr))
+  {
+    argv[*argc] = token;
+    (*argc)++;
+  }  
+}
+
+static bool
+setup_intr_stack (void **esp, const char **argv, const int argc)
+{
+  bool success = false;
+  int i;
+  size_t argv_length, word_align, argv_tot_length;
+  void* esp_ = esp;
+
+  //push argv right to left
+  argv_tot_length = 0;
+  for (i = argc - 1; i > 0; i--)
+  {
+    argv_length = strlen(argv[i]) + 1;
+    *esp -= argv_length;
+    memcpy (*esp, argv[i], argv_length);
+    argv_tot_length += argv_length;
+  }
+  
+  //align
+  word_align = (uintptr_t)(*esp) % 4;
+  for (i = 0; i < word_align; i++)
+  {
+    *esp -= 1;
+    *(uint8_t *)(*esp) = (uint8_t)0;
+  }
+
+  //push null to argv[]
+  *esp -= 4;
+  *((char *)(*esp)) = (char *)0;
+
+  //check address of argv[] and push address to esp
+  for (i = argc - 1; i > 0; i--)
+  {
+    argv_length = strlen(argv[i]) + 1;
+    esp_ -= argv_length;
+
+    *esp -= 4;
+    *((char *)(*esp)) = (char *)esp_;
+  }
+
+  //push argv
+  *esp -= 4;
+  *((char *)(*esp)) = (char **)(esp + 4);
+
+  //push argc
+  *esp -= 4;
+  *((int *)(*esp)) = argc;
+
+  //push return address
+  *esp -= 4;
+  *((uint32_t *)(*esp)) = (void *) NULL;
+
+  success = true;
+
+  return success;
 }
