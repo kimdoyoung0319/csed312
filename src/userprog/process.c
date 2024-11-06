@@ -22,6 +22,8 @@
 
 #define WORD_SIZE (sizeof (intptr_t))
 
+extern struct lock filesys_lock;
+
 /* Frame needed to execute a process from command line. */
 struct process_exec_frame
   {
@@ -53,8 +55,8 @@ process_execute (const char *cmd_line)
   int i = 0;
   struct file *fp;
   char *cmd_line_copy, *pos, *token, **argv;
-  struct process_exec_frame *frame;
   struct process *this = thread_current ()->process;
+  struct process_exec_frame frame;
   bool file_not_found;
   tid_t tid;
 
@@ -77,6 +79,7 @@ process_execute (const char *cmd_line)
     argv[i++] = token;
 
   /* Checks whether the file is really present or not. */
+  lock_acquire (&filesys_lock);
   file_not_found = (fp = filesys_open (argv[0])) == NULL;
   file_close (fp);
 
@@ -88,12 +91,10 @@ process_execute (const char *cmd_line)
     }
 
   /* Create a new thread to execute with ARGV. */
-  frame = (struct process_exec_frame *) 
-           malloc (sizeof (struct process_exec_frame));
-  frame->argv = argv;
-  frame->parent = this;
+  frame.argv = argv;
+  frame.parent = this;
 
-  tid = thread_create (argv[0], PRI_DEFAULT, start_process, frame);
+  tid = thread_create (argv[0], PRI_DEFAULT, start_process, &frame);
   if (tid == TID_ERROR)
     {
       palloc_free_page (cmd_line_copy); 

@@ -12,11 +12,15 @@
 
 #define WORD_SIZE (sizeof (intptr_t))
 
+/* Lock to ensure consistency of the file system. */
+struct lock filesys_lock;
+
 static void syscall_handler (struct intr_frame *);
 static uint32_t dereference (const void *, int, int);
 static struct file *retrieve_fp (int);
 static bool verify_string (const char *);
-static bool verify_buffer (char *, int);
+static bool verify_read (char *, int);
+static bool verify_write (char *, int);
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
 
@@ -38,6 +42,7 @@ void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init (&filesys_lock);
 }
 
 static void
@@ -125,11 +130,25 @@ verify_string (const char *str_)
   return true;
 }
 
+/* Verifies read buffer BUF whose size is SIZE by trying to read a character
+   on each bytes of BUF. Return true if and only if all bytes in BUF is 
+   readable. */
+static bool
+verify_read (char *buf_, int size)
+{ 
+  uint8_t *buf = (uint8_t *) buf_;
+  for (int i = 0; i < size; i++)
+      if (!is_user_vaddr (buf + i) && (get_user (buf + i) == -1))
+        return false;
+  
+  return true;
+}
+
 /* Verifies write buffer BUF whose size is SIZE by trying to put a character
    on each bytes of BUF. Return true if and only if all bytes in BUF is 
    writable. This function fills 0 on BUF. */
 static bool
-verify_buffer (char *buf_, int size)
+verify_write (char *buf_, int size)
 {
   uint8_t *buf = (uint8_t *) buf_;
   for (int i = 0; i < size; i++)
@@ -202,25 +221,35 @@ wait (void *esp)
 static uint32_t
 create (void *esp)
 {
+  uint32_t retval;
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
   unsigned initial_size = dereference (esp, 2, WORD_SIZE);  
 
   if (!verify_string (file))
     return (uint32_t) false;
 
-  return (uint32_t) filesys_create (file, initial_size);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) filesys_create (file, initial_size);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for remove(). */
 static uint32_t
 remove (void *esp)
 {
+  uint32_t retval;
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
 
   if (!verify_string (file))
     return (uint32_t) false;
 
-  return (uint32_t) filesys_remove (file);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) filesys_remove (file);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for open(). */
@@ -230,8 +259,13 @@ open (void *esp)
   struct file *fp;
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
 
+  lock_acquire (&filesys_lock);
   if (!verify_string (file) || (fp = filesys_open (file)) == NULL)
-    return (uint32_t) FD_ERROR;
+    {
+      lock_release (&filesys_lock);
+      return (uint32_t) FD_ERROR;
+    }
+  lock_release (&filesys_lock);
 
   return (uint32_t) fp->fd;
 }
@@ -241,13 +275,18 @@ open (void *esp)
 static uint32_t 
 filesize (void *esp)
 {
+  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
     return (uint32_t) -1;
 
-  return (uint32_t) file_length (fp);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_length (fp);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for read(). Returns -1 if given file descriptor is not 
@@ -256,12 +295,13 @@ filesize (void *esp)
 static uint32_t
 read (void *esp)
 {
+  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   void *buffer = (void *) dereference (esp, 2, WORD_SIZE);
   unsigned pos = 0, size = dereference (esp, 3, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
-  if (!verify_buffer (buffer, size))
+  if (!verify_write (buffer, size))
     process_exit (-1);
 
   if (fp == NULL && fp != STDIN_FILENO)
@@ -274,7 +314,11 @@ read (void *esp)
       return (uint32_t) size;
     }
 
-  return (uint32_t) file_read (fp, buffer, size);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_read (fp, buffer, size);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for write(). Returns 0 if it cannot write any byte at 
@@ -282,12 +326,13 @@ read (void *esp)
 static uint32_t
 write (void *esp)
 {
+  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   void *buffer = (void *) dereference (esp, 2, WORD_SIZE);
   unsigned size = dereference (esp, 3, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
-  if ((fp == NULL && fd != STDOUT_FILENO) || !verify_string (buffer))
+  if ((fp == NULL && fd != STDOUT_FILENO) || !verify_read (buffer, size))
     return (uint32_t) 0;
 
   if (fd == STDOUT_FILENO)
@@ -296,7 +341,11 @@ write (void *esp)
       return (uint32_t) size;
     }
 
-  return (uint32_t) file_write (fp, buffer, size);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_write (fp, buffer, size);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for seek(). */
@@ -310,7 +359,9 @@ seek (void *esp)
   if (fp == NULL)
     return;
 
+  lock_acquire (&filesys_lock);
   file_seek (fp, position);
+  lock_release (&filesys_lock);
 }
 
 /* System call handler for seek(). Returns -1 if given file descriptor is not 
@@ -318,13 +369,18 @@ seek (void *esp)
 static uint32_t
 tell (void *esp)
 {
+  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
     return (uint32_t) -1;
 
-  return (uint32_t) file_tell (fp);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_tell (fp);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for close(). Does notihing if given file descriptor is 
@@ -335,5 +391,7 @@ close (void *esp)
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
+  lock_acquire (&filesys_lock);
   file_close (fp);
+  lock_release (&filesys_lock);
 }
