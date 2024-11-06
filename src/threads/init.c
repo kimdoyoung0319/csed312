@@ -120,6 +120,9 @@ main (void)
   serial_init_queue ();
   timer_calibrate ();
 
+  /* Make top level process. */
+  process_init ();
+
 #ifdef FILESYS
   /* Initialize file system. */
   ide_init ();

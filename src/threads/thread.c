@@ -167,7 +167,7 @@ thread_tick (void)
   if (t == idle_thread)
     idle_ticks++;
 #ifdef USERPROG
-  else if (t->pagedir != NULL)
+  else if (t->process != NULL)
     user_ticks++;
 #endif
   else
@@ -194,7 +194,6 @@ thread_print_stats (void)
   printf ("Thread: %lld idle ticks, %lld kernel ticks, %lld user ticks\n",
           idle_ticks, kernel_ticks, user_ticks);
 }
-
 
 /* Creates a new kernel thread named NAME with the given initial
    PRIORITY, which executes FUNCTION passing AUX as the argument,
@@ -331,21 +330,23 @@ thread_tid (void)
 }
 
 /* Deschedules the current thread and destroys it.  Never
-   returns to the caller. */
+   returns to the caller. It does not destory its associated process, hence
+   it might be dangling. Therefore, it should not be called when there's an
+   associated user process of current thread. Use process_exit() instead. */
 void
 thread_exit (void) 
 {
-  ASSERT (!intr_context ());
+  struct thread *cur = thread_current ();
 
-#ifdef USERPROG
-  process_destroy ();
-#endif
-;
+  ASSERT (!intr_context ());
+  ASSERT (cur->process == NULL);
+
+  intr_disable ();
+
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
-  intr_disable ();
-  list_remove (&thread_current ()->allelem);
+  list_remove (&cur->allelem);
   thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
@@ -571,19 +572,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->original = t->priority;
 
 #ifdef USERPROG
-  /* There is no such thing as parents for an initial thread. */
-  struct thread *par = (t == initial_thread) ? NULL : thread_current ();
-
-  /* Initialize list to manage children processes and opened files. */
-  list_init (&t->children);
-  list_init (&t->opened);
-
-  /* Add newly created thread to child list of its parent. */
-  if (par != NULL)
-    list_push_back (&par->children, &t->childelem);
-
-  t->parent = par;
-  t->waited = false;
+  /* Process is nonexist until start_process() is called on this thread. */
+  t->process = NULL;
 #endif
 
   old_level = intr_disable ();

@@ -7,6 +7,7 @@
 #include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/synch.h"
+#include "userprog/process.h"
 
 /* Lock used by allocate_fd(). */
 static struct lock fd_lock;
@@ -26,7 +27,7 @@ file_init (void)
 struct file *
 file_open (struct inode *inode) 
 {
-  struct list *opened = &thread_current ()->opened;
+  struct process *this = thread_current ()->process;
   struct file *file = calloc (1, sizeof *file);
   if (inode != NULL && file != NULL)
     {
@@ -34,7 +35,7 @@ file_open (struct inode *inode)
       file->pos = 0;
       file->deny_write = false;
       file->fd = allocate_fd ();
-      list_push_back (opened, &file->elem);
+      list_push_back (&this->opened, &file->elem);
       return file;
     }
   else

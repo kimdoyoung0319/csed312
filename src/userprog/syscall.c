@@ -15,7 +15,10 @@
 static void syscall_handler (struct intr_frame *);
 static uint32_t dereference (const void *, int, int);
 static struct file *retrieve_fp (int);
-static void verify_string (const char *);
+static bool verify_string (const char *);
+static bool verify_buffer (char *, int);
+static int get_user (const uint8_t *);
+static bool put_user (uint8_t *, uint8_t);
 
 static void halt (void);
 static void exit (void *);
@@ -78,15 +81,18 @@ dereference (const void *base, int offset, int index)
 
 /* Retrieve file pointer from file descriptor, FD. Returns NULL if it has
    failed to find a file with file descriptor of FD among current process's 
-   opened files. */
+   opened files. This must be called within user process context. */
 static struct file *
 retrieve_fp (int fd)
 {
-  struct list *opened = &thread_current ()->opened;
+  struct process *this = thread_current ()->process;
   struct file *fp = NULL;
   struct list_elem *e;
 
-  for (e = list_begin (opened); e != list_end (opened); e = list_next (e))
+  ASSERT (this != NULL);
+
+  for (e = list_begin (&this->opened); e != list_end (&this->opened); 
+       e = list_next (e))
     {
       fp = list_entry (e, struct file, elem);
       if (fp->fd == fd)
@@ -100,13 +106,62 @@ retrieve_fp (int fd)
 }
 
 /* Verifies null-terminated STR by dereferencing each character in STR until
-   it reaches null character. If succeed, it would normally return. Else, it
-   would cause page fault and eventually terminate faulting user process. */
-static void
-verify_string (const char *str)
+   it reaches null character. Return true if and only if all characters in STR
+   is valid. */
+static bool
+verify_string (const char *str_)
 {
-  for (int i = 0; (0xFF & dereference ((void *) str, i, 1)) != '\0';
-       i++);
+  char ch;
+  uint8_t *str = (uint8_t *) str_;
+  for (int i = 0; ; i++)
+    {
+      if (!is_user_vaddr (str + i) || (ch = get_user (str + i)) == -1)
+        return false;
+      
+      if (ch == '\0')
+        break;
+    }
+
+  return true;
+}
+
+/* Verifies write buffer BUF whose size is SIZE by trying to put a character
+   on each bytes of BUF. Return true if and only if all bytes in BUF is 
+   writable. This function fills 0 on BUF. */
+static bool
+verify_buffer (char *buf_, int size)
+{
+  uint8_t *buf = (uint8_t *) buf_;
+  for (int i = 0; i < size; i++)
+      if (!is_user_vaddr (buf + i) && put_user (buf + i, 0))
+        return false;
+  
+  return true;
+}
+
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static int
+get_user (const uint8_t *uaddr)
+{
+  int result;
+  asm ("movl $1f, %0; movzbl %1, %0; 1:"
+       : "=&a" (result) : "m" (*uaddr));
+  return result;
+}
+
+/* Writes BYTE to user address UDST.
+   UDST must be below PHYS_BASE.
+   Returns true if successful, false if a segfault occurred. */
+static bool
+put_user (uint8_t *udst, uint8_t byte)
+{
+  int error_code;
+  asm ("movl $1f, %0; movb %b2, %1; 1:"
+       : "=&a" (error_code), "=m" (*udst) : "q" (byte));
+  return error_code != -1;
 }
 
 /* System call handler for halt(). */
@@ -129,7 +184,8 @@ static uint32_t
 exec (void *esp)
 {
   char *cmd_line = (char *) dereference (esp, 1, WORD_SIZE);
-  verify_string (cmd_line);
+  if (!verify_string (cmd_line))
+    return (uint32_t) TID_ERROR;
 
   return (uint32_t) process_execute (cmd_line);
 }
@@ -148,7 +204,9 @@ create (void *esp)
 {
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
   unsigned initial_size = dereference (esp, 2, WORD_SIZE);  
-  verify_string (file);
+
+  if (!verify_string (file))
+    return (uint32_t) false;
 
   return (uint32_t) filesys_create (file, initial_size);
 }
@@ -158,7 +216,9 @@ static uint32_t
 remove (void *esp)
 {
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
-  verify_string (file);
+
+  if (!verify_string (file))
+    return (uint32_t) false;
 
   return (uint32_t) filesys_remove (file);
 }
@@ -167,11 +227,10 @@ remove (void *esp)
 static uint32_t
 open (void *esp)
 {
+  struct file *fp;
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
-  verify_string (file);
-  struct file *fp = filesys_open (file);
 
-  if (fp == NULL)
+  if (!verify_string (file) || (fp = filesys_open (file)) == NULL)
     return (uint32_t) FD_ERROR;
 
   return (uint32_t) fp->fd;
@@ -192,7 +251,8 @@ filesize (void *esp)
 }
 
 /* System call handler for read(). Returns -1 if given file descriptor is not 
-   a valid file descriptor. */
+   a valid file descriptor. Kills current process with exit status -1 if given
+   buffer pointer is invalid. */
 static uint32_t
 read (void *esp)
 {
@@ -201,8 +261,11 @@ read (void *esp)
   unsigned pos = 0, size = dereference (esp, 3, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
-  /* Checks if all addresses of BUFFER within SIZE is in user address space. */
-  dereference (buffer, size, 1);
+  if (!verify_buffer (buffer, size))
+    process_exit (-1);
+
+  if (fp == NULL && fp != STDIN_FILENO)
+    return (uint32_t) -1;
 
   if (fd == STDIN_FILENO)
     {
@@ -211,14 +274,11 @@ read (void *esp)
       return (uint32_t) size;
     }
 
-  if (fp == NULL)
-    return (uint32_t) -1;
-
   return (uint32_t) file_read (fp, buffer, size);
 }
 
-/* System call handler for write(). Returns -1 if given file descriptor is not 
-   a valid file descriptor. */
+/* System call handler for write(). Returns 0 if it cannot write any byte at 
+   for some reason. */
 static uint32_t
 write (void *esp)
 {
@@ -227,23 +287,19 @@ write (void *esp)
   unsigned size = dereference (esp, 3, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
+  if ((fp == NULL && fd != STDOUT_FILENO) || !verify_string (buffer))
+    return (uint32_t) 0;
+
   if (fd == STDOUT_FILENO)
     {
       putbuf ((char *) buffer, size);
       return (uint32_t) size;
     }
 
-  if (fp == NULL)
-    return (uint32_t) -1;
-
-  /* Checks if all addresses of BUFFER within SIZE is in user address space. */
-  dereference (buffer, size, 1);
-
   return (uint32_t) file_write (fp, buffer, size);
 }
 
-/* System call handler for seek(). Returns -1 if given file descriptor is not 
-   a valid file descriptor. */
+/* System call handler for seek(). */
 static void
 seek (void *esp)
 {

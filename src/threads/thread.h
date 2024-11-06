@@ -21,6 +21,8 @@ enum thread_status
 typedef int tid_t;
 #define TID_ERROR ((tid_t) -1)          /* Error value for tid_t. */
 
+#include "userprog/process.h"
+
 /* Thread priorities. */
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
@@ -33,7 +35,7 @@ typedef int tid_t;
 #define MAX_NICE 20
 #define MIN_NICE -20
 
-/* A kernel thread or user process.
+/* A kernel thread.
 
    Each thread structure is stored in its own 4 kB page.  The
    thread structure itself sits at the very bottom of the page
@@ -92,39 +94,29 @@ typedef int tid_t;
 struct thread
   {
     /* Owned by thread.c. */
-    tid_t tid;                          /* Thread identifier. */
-    enum thread_status status;          /* Thread state. */
-    char name[16];                      /* Name (for debugging purposes). */
-    uint8_t *stack;                     /* Saved stack pointer. */
-    int priority;                       /* Priority. */
-    struct list_elem allelem;           /* List element for all threads list. */
-    int nice;                           /* Niceness. */ 
-    fixed recent_cpu;                   /* Recent CPU usage. */
+    tid_t tid;                      /* Thread identifier. */
+    enum thread_status status;      /* Thread state. */
+    char name[16];                  /* Name (for debugging purposes). */
+    uint8_t *stack;                 /* Saved stack pointer. */
+    int priority;                   /* Priority. */
+    struct list_elem allelem;       /* List element for all threads list. */
+    int nice;                       /* Niceness. */ 
+    fixed recent_cpu;               /* Recent CPU usage. */
 
     /* Shared between thread.c and synch.c. */
-    struct list_elem elem;              /* List element. */
-    struct list donors;                 /* List of threads that have donated. */
-    struct list_elem donorelem;         /* List element for donating. */
-    struct lock *waiting;               /* Lock this thread is waiting for. */
-    int original;                       /* Original priority before donation. */
+    struct list_elem elem;          /* List element. */
+    struct list donors;             /* List of threads that have donated. */
+    struct list_elem donorelem;     /* List element for donating. */
+    struct lock *waiting;           /* Lock this thread is waiting for. */
+    int original;                   /* Original priority before donation. */
 
 #ifdef USERPROG
-    /* Owned by userprog/process.c. */
-    uint32_t *pagedir;                  /* Page directory. */
-
-    /* Owned by userprog/syscall.c. */
-    int child_status;                   /* Status code of exited thread. */
-    struct thread *parent;              /* Thread of the parent process. */
-    struct list opened;                 /* List of opened files. */
-
-    /* Shared between userprog/process.c and userprog/syscall.c. */
-    struct list children;               /* List of child processes. */
-    struct list_elem childelem;         /* List element for child list. */
-    bool waited;                        /* Is its parent waiting on this? */
+    /* Owned by thread.c. */
+    struct process *process;        /* Process of this thread. */
 #endif
 
     /* Owned by thread.c. */
-    unsigned magic;                     /* Detects stack overflow. */
+    unsigned magic;                 /* Detects stack overflow. */
   };
 
 /* If false (default), use round-robin scheduler.

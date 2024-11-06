@@ -1,3 +1,4 @@
+/* TODO: Where does the pagedir initialized? -> load()! Modify it! */
 #include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
@@ -17,38 +18,60 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 
 #define WORD_SIZE (sizeof (intptr_t))
 
+/* Frame needed to execute a process from command line. */
+struct process_exec_frame
+  {
+    char **argv;
+    struct process *parent;
+  };
+
+static struct process *make_process (struct process *, struct thread *);
+static void destroy_process (struct process *);
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static void *push (void *, void *, int);
 
+/* Initialize top level process. This should be called after thread_init(). */
+void
+process_init (void)
+{
+  make_process (NULL, thread_current ());
+}
+
 /* Starts a new thread running a user program loaded from
    CMD_LINE.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
-   thread id, or TID_ERROR if the thread cannot be created. */
-tid_t
+   process id, or PID_ERROR if the thread cannot be created. 
+   This must be executed in user process's context. */
+pid_t
 process_execute (const char *cmd_line) 
 {
   int i = 0;
-  char *cmd_line_copy, *pos, *token, **argv;
   struct file *fp;
+  char *cmd_line_copy, *pos, *token, **argv;
+  struct process_exec_frame *frame;
+  struct process *this = thread_current ()->process;
   bool file_not_found;
   tid_t tid;
+
+  ASSERT (this != NULL);
 
   /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
   cmd_line_copy = palloc_get_page (0);
   if (cmd_line_copy == NULL)
-    return TID_ERROR;
+    return PID_ERROR;
   strlcpy (cmd_line_copy, cmd_line, PGSIZE);
 
   /* Tokenize the copy of CMD_LINE, 
      and stores each address of tokenized string in ARGV. */
   argv = palloc_get_page (PAL_ZERO);
   if (argv == NULL)
-    return TID_ERROR;
+    return PID_ERROR;
   for (token = strtok_r (cmd_line_copy, " ", &pos); token != NULL;
        token = strtok_r (NULL, " ", &pos))
     argv[i++] = token;
@@ -61,37 +84,64 @@ process_execute (const char *cmd_line)
     {
       palloc_free_page (cmd_line_copy);
       palloc_free_page (argv);
-      return TID_ERROR;
+      return PID_ERROR;
     }
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (argv[0], PRI_DEFAULT, start_process, argv);
+  /* Create a new thread to execute with ARGV. */
+  frame = (struct process_exec_frame *) 
+           malloc (sizeof (struct process_exec_frame));
+  frame->argv = argv;
+  frame->parent = this;
+
+  tid = thread_create (argv[0], PRI_DEFAULT, start_process, frame);
   if (tid == TID_ERROR)
     {
       palloc_free_page (cmd_line_copy); 
       palloc_free_page (argv);
     }
 
-  return tid;
+  sema_down (&this->sema);
+  if (!this->success)
+    return PID_ERROR;
+
+  return (pid_t) tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *argv_)
+start_process (void *frame_)
 {
   int argc, padding, len, i;
-  char **argv = argv_;
+  struct process_exec_frame *frame = frame_;
+  char **argv = frame->argv;
+  struct process *par = frame->parent;
   void *esp, *cmd_line = pg_round_down (argv[0]);
   struct intr_frame if_;
-  bool success;
+  struct thread *cur = thread_current ();
+  bool load_success;
 
-  /* Initialize interrupt frame and load executable. */
+  /* Initialize interrupt frame. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (argv[0], &if_.eip, &if_.esp);
+
+  /* Load executable and make process. */
+  cur->process = make_process (par, cur);
+  load_success = load (argv[0], &if_.eip, &if_.esp);
+  par->success = load_success && (cur->process != NULL);
+  sema_up (&par->sema);
+
+  /* If load or process making failed, quit. */
+  if (!par->success)
+    {
+      palloc_free_page (argv);
+      palloc_free_page (cmd_line);
+      cur->process = NULL;
+      destroy_process (cur->process);
+      thread_exit ();
+    }
 
   /* Get ARGC. */
   for (argc = 0; argv[argc] != NULL; argc++);
@@ -123,11 +173,8 @@ start_process (void *argv_)
   esp = push (esp, NULL, sizeof (void (*) (void)));
   if_.esp = esp;
 
-  /* If load failed, quit. */
   palloc_free_page (argv);
   palloc_free_page (cmd_line);
-  if (!success) 
-    thread_exit ();
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -139,48 +186,99 @@ start_process (void *argv_)
   NOT_REACHED ();
 }
 
-/* Waits for thread TID to die and returns its exit status.  If
-   it was terminated by the kernel (i.e. killed due to an
-   exception), returns -1.  If TID is invalid or if it was not a
+/* Waits for process CHILD_PID to die and returns its exit status.  
+   If it was terminated by the kernel (i.e. killed due to an
+   exception), returns -1.  If CHILD_PID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
-   been successfully called for the given TID, returns -1
-   immediately, without waiting. */
+   been successfully called for the given PID, returns -1
+   immediately, without waiting. It must be called in user process
+   context. */
 int
-process_wait (tid_t child_tid) 
+process_wait (pid_t child_pid) 
 {
-  struct thread *child = NULL, *cur = thread_current ();
+  int status;
+  struct process *child = NULL, *this = thread_current ()->process;
   struct list_elem *e;
+
+  ASSERT (this != NULL);
 
   enum intr_level old_level = intr_disable ();
 
-  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+  for (e = list_begin (&this->children); e != list_end (&this->children);
        e = list_next (e))
     {
-      child = list_entry (e, struct thread, childelem);
-      if (child->tid == child_tid)
+      child = list_entry (e, struct process, elem);
+      if (child->pid == child_pid)
         break;
     }
 
-  if (child == NULL || child->tid != child_tid || child->waited)
-    return -1;
+  if (child == NULL || child->pid != child_pid || child->waited)
+    {
+      intr_set_level (old_level);
+      return -1;
+    }
 
   child->waited = true;
-  thread_block ();
+  if (child->state == PROCESS_ALIVE)
+      thread_block ();
   intr_set_level (old_level);
 
-  return cur->child_status;
+  status = child->status;
+  destroy_process (child);
+  return status;
 }
 
-/* Free the current process's resources. */
-void
-process_destroy (void)
+/* Make process whose parent is PAR and whose associated kernel thread is T. 
+   Also, does basic initializations on it. Returns null pointer if memory
+   allocation has failed or page directory creation has failed. */
+static struct process *
+make_process (struct process *par, struct thread *t)
 {
-  struct thread *cur = thread_current ();
-  uint32_t *pd;
+  struct process *this = (struct process *) malloc (sizeof (struct process));
+
+  ASSERT (t != NULL);
+
+  if (this == NULL)
+    return NULL;
+  
+  this->pid = t->tid;
+  this->state = PROCESS_ALIVE;
+  strlcpy (this->name, t->name, sizeof this->name);
+  sema_init (&this->sema, 0);
+  this->thread = t;
+  this->waited = false;
+  list_init (&this->children);
+  list_init (&this->opened);
+  t->process = this;
+
+  if (par != NULL)
+    {
+      list_push_back (&par->children, &this->elem);
+      this->parent = par->thread;
+    }
+
+  if ((this->pagedir = pagedir_create ()) == NULL)
+    {
+      free (this);
+      return NULL;
+    }
+
+  return this;
+}
+
+/* Free the resources of P. It neither exits its associated kernel thread,
+   nor modifies its parent or children. It only frees memorys taken to 
+   represent process structure. If P is a null pointer, does nothing. */
+static void
+destroy_process (struct process *p)
+{
+  if (p == NULL)
+    return;
+
+  uint32_t *pd = p->pagedir;
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  pd = cur->pagedir;
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
@@ -190,10 +288,12 @@ process_destroy (void)
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
-      cur->pagedir = NULL;
+      p->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+
+  free (p);
 }
 
 /* Sets up the CPU for running user code in the current
@@ -202,36 +302,62 @@ process_destroy (void)
 void
 process_activate (void)
 {
-  struct thread *t = thread_current ();
+  struct process *this = thread_current ()->process;
 
-  /* Activate thread's page tables. */
-  pagedir_activate (t->pagedir);
+  /* Activate thread's page tables. If it is kernel which does not have
+     associated user process, activate initial one that has only kernel 
+     mapping.*/
+  if (this == NULL)
+    pagedir_activate (NULL);
+  else
+    pagedir_activate (this->pagedir);
 
   /* Set thread's kernel stack for use in processing
      interrupts. */
   tss_update ();
 }
 
-/* TODO: Clean up acquired locks when terminating. */
-/* Exits current process with exit code of STATUS. */
+/* Exits current process with exit code of STATUS. This must be executed in
+   user process's context. */
 void 
 process_exit (int status)
 {
   struct file *fp;
   struct list_elem *e, *next;
-  struct thread *cur = thread_current (), *par = cur->parent;
+  struct thread *cur = thread_current ();
+  struct process *child, *this = cur->process;
 
-  /* This is to maintain consistency of thread structures. Interrupt will be 
+  ASSERT (this != NULL);
+
+  struct thread *par;
+  par = this->parent;
+  this->state = PROCESS_DEAD;
+
+  ASSERT (!(this->waited && par == NULL));
+  ASSERT (!(this->waited && par->process == NULL));
+
+  this->status = status;
+
+  /* This is to maintain consistency of process structures. Interrupt will be 
      enabled after thread_exit() call which causes context switch. */
   intr_disable ();
 
-  /* Exiting process's children are orphaned. */
-  for (e = list_begin (&cur->children); e != list_end (&cur->children);
-       e = list_next (e))
-    list_entry (e, struct thread, childelem)->parent = NULL;
+  /* Exiting process's children are orphaned. For processes who are not 
+     orphaned, their parent is responsible to destroy them. */
+  for (e = list_begin (&this->children); e != list_end (&this->children); )
+    {
+      child = list_entry (e, struct process, elem);
+      next = list_remove (e);
+      child->parent = NULL;
 
+      if (child->status == PROCESS_DEAD)
+        destroy_process (child);
+
+      e = next;
+    }
+  
   /* Close opened files. */
-  for (e = list_begin (&cur->opened); e != list_end (&cur->opened); )
+  for (e = list_begin (&this->opened); e != list_end (&this->opened); )
     {
       next = list_next (e);
       fp = list_entry (e, struct file, elem);
@@ -239,15 +365,14 @@ process_exit (int status)
       e = next;
     }
 
-  /* If this process's parent is wating on it, give it exit code. */
-  if (cur->waited && par != NULL)
-    {
-      par->child_status = status;
-      thread_unblock (par);
-    }
+  printf ("%s: exit(%d)\n", this->name, status);
 
-  printf ("%s: exit(%d)\n", cur->name, status);
-  list_remove (&cur->childelem);
+  if (this->waited)
+    thread_unblock (par);
+  else if (par == NULL || par->process == NULL)
+    destroy_process (this);
+
+  cur->process = NULL;
   thread_exit ();
 }
 
@@ -327,17 +452,13 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
 bool
 load (const char *file_name, void (**eip) (void), void **esp) 
 {
-  struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
   off_t file_ofs;
   bool success = false;
   int i;
 
-  /* Allocate and activate page directory. */
-  t->pagedir = pagedir_create ();
-  if (t->pagedir == NULL) 
-    goto done;
+  /* Activate page directory. */
   process_activate ();
 
   /* Open executable file. */
@@ -578,18 +699,21 @@ setup_stack (void **esp)
 static bool
 install_page (void *upage, void *kpage, bool writable)
 {
-  struct thread *t = thread_current ();
+  struct process *this = thread_current ()->process;
+
+  ASSERT (this != NULL);
 
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
-  return (pagedir_get_page (t->pagedir, upage) == NULL
-          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+  return (pagedir_get_page (this->pagedir, upage) == NULL
+          && pagedir_set_page (this->pagedir, upage, kpage, writable));
 }
 
 /* Pushes SIZE bytes of data from SRC at the top of the stack specified
    with TOP. TOP must be a pointer to somewhere in user virtual address 
-   space. Returns an address that refers to new top of the stack. If SRC is
-   NULL, then pushes SIZE bytes of 0s on the stack. */
+   space. Or PHYS_BASE if the stack is empty. Returns an address that refers 
+   to new top of the stack. If SRC is a null pointer, then pushes SIZE bytes 
+   of zeros on the stack. */
 static void *
 push (void *top, void *src, int size)
 {
