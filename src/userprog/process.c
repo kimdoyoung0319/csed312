@@ -204,6 +204,7 @@ process_wait (pid_t child_pid)
 
   enum intr_level old_level = intr_disable ();
 
+  /* Find child to wait. */
   for (e = list_begin (&this->children); e != list_end (&this->children);
        e = list_next (e))
     {
@@ -212,18 +213,22 @@ process_wait (pid_t child_pid)
         break;
     }
 
+  /* If there's no such child or the child is already waited, return -1. */
   if (child == NULL || child->pid != child_pid || child->waited)
     {
       intr_set_level (old_level);
       return -1;
     }
 
+  /* If the child to wait is still alive, wait for it to exit. */
   child->waited = true;
   if (child->state == PROCESS_ALIVE)
       thread_block ();
   intr_set_level (old_level);
 
+  /* The child has exited. Get its exit status and clean it up. */
   status = child->status;
+  list_remove (&child->elem);
   destroy_process (child);
   return status;
 }
@@ -272,24 +277,26 @@ make_process (struct process *par, struct thread *t)
 static void
 destroy_process (struct process *p)
 {
+  struct process *this = thread_current ()->process;
+
   if (p == NULL)
     return;
 
   uint32_t *pd = p->pagedir;
 
+  /* TODO: Might be problematic. pagedir_activate (NULL) might be needed. */
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
+         this->pagedir to NULL before switching page directories,
          so that a timer interrupt can't switch back to the
          process page directory.  We must activate the base page
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
       p->pagedir = NULL;
-      pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
 
