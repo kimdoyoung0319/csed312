@@ -22,6 +22,8 @@
 
 #define WORD_SIZE (sizeof (intptr_t))
 
+/* Lock to ensure consistency of the file system. Definition can be found in
+   userprog/syscall.c. */
 extern struct lock filesys_lock;
 
 /* Frame needed to execute a process from command line. */
@@ -82,6 +84,7 @@ process_execute (const char *cmd_line)
   lock_acquire (&filesys_lock);
   file_not_found = (fp = filesys_open (argv[0])) == NULL;
   file_close (fp);
+  lock_release (&filesys_lock);
 
   if (file_not_found)
     {
@@ -470,6 +473,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
+  lock_acquire (&filesys_lock);
   file = filesys_open (file_name);
   if (file == NULL) 
     {
@@ -563,6 +567,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* We arrive here whether the load is successful or not. */
   if (!success)
     file_close (file);
+  lock_release (&filesys_lock);
 
   return success;
 }
