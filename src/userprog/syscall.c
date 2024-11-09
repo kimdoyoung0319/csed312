@@ -364,7 +364,7 @@ seek (void *esp)
   lock_release (&filesys_lock);
 }
 
-/* System call handler for seek(). Returns -1 if given file descriptor is not 
+/* System call handler for tell(). Returns -1 if given file descriptor is not 
    a valid file descriptor. */
 static uint32_t
 tell (void *esp)

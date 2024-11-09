@@ -80,7 +80,7 @@ process_execute (const char *cmd_line)
        token = strtok_r (NULL, " ", &pos))
     argv[i++] = token;
 
-  /* Checks whether the file is really present or not. */
+  /* Check whether the file is really present or not. */
   lock_acquire (&filesys_lock);
   file_not_found = (fp = filesys_open (argv[0])) == NULL;
   file_close (fp);
@@ -93,7 +93,7 @@ process_execute (const char *cmd_line)
       return PID_ERROR;
     }
 
-  /* Create a new thread to execute with ARGV. */
+  /* Create a new thread to be executed with ARGV. */
   frame.argv = argv;
   frame.parent = this;
 
@@ -281,8 +281,6 @@ make_process (struct process *par, struct thread *t)
 static void
 destroy_process (struct process *p)
 {
-  struct process *this = thread_current ()->process;
-
   if (p == NULL)
     return;
 
