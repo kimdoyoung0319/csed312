@@ -111,7 +111,7 @@ struct thread
     int original;                   /* Original priority before donation. */
 
 #ifdef USERPROG
-    /* Owned by thread.c. */
+    /* Owned by userprog/process.c. */
     struct process *process;        /* Process of this thread. */
 #endif
 

@@ -1,4 +1,5 @@
-/* TODO: Where does the pagedir initialized? -> load()! Modify it! */
+/* TODO: Add #ifndef USERPROG ... #endif guard for all code sections associated
+         with user process. */
 #include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
@@ -56,11 +57,10 @@ pid_t
 process_execute (const char *cmd_line) 
 {
   int i = 0;
-  struct file *fp;
   char *cmd_line_copy, *pos, *token, **argv;
   struct process *this = thread_current ()->process;
   struct process_exec_frame frame;
-  bool file_not_found, success = false;
+  bool success = false;
   tid_t tid;
 
   ASSERT (this != NULL);
@@ -80,19 +80,6 @@ process_execute (const char *cmd_line)
   for (token = strtok_r (cmd_line_copy, " ", &pos); token != NULL;
        token = strtok_r (NULL, " ", &pos))
     argv[i++] = token;
-
-  /* Check whether the file is really present or not. */
-  lock_acquire (&filesys_lock);
-  file_not_found = (fp = filesys_open (argv[0])) == NULL;
-  file_close (fp);
-  lock_release (&filesys_lock);
-
-  if (file_not_found)
-    {
-      palloc_free_page (cmd_line_copy);
-      palloc_free_page (argv);
-      return PID_ERROR;
-    }
 
   /* Create a new thread to be executed with ARGV. */
   frame.argv = argv;
@@ -208,8 +195,6 @@ process_wait (pid_t child_pid)
 
   ASSERT (this != NULL);
 
-  enum intr_level old_level = intr_disable ();
-
   /* Find child to wait. */
   for (e = list_begin (&this->children); e != list_end (&this->children);
        e = list_next (e))
@@ -221,16 +206,12 @@ process_wait (pid_t child_pid)
 
   /* If there's no such child or the child is already waited, return -1. */
   if (child == NULL || child->pid != child_pid || child->waited)
-    {
-      intr_set_level (old_level);
-      return -1;
-    }
+    return -1;
 
   /* If the child to wait is still alive, wait for it to exit. */
   child->waited = true;
   if (child->state == PROCESS_ALIVE)
     sema_down (&this->sema);
-  intr_set_level (old_level);
 
   /* The child has exited. Get its exit status and clean it up. */
   status = child->status;
@@ -283,32 +264,35 @@ make_process (struct process *par, struct thread *t)
 static void
 destroy_process (struct process *p)
 {
+  struct process *this = thread_current ()->process;
+
   if (p == NULL)
     return;
 
   uint32_t *pd = p->pagedir;
 
-  /* TODO: Might be problematic. pagedir_activate (NULL) might be needed. */
   /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
+     to the kernel-only page directory when the destroyed process is current
+     process. */
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
-         this->pagedir to NULL before switching page directories,
+         p->pagedir to NULL before switching page directories,
          so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
+         process page directory. We must activate the base page
+         directory before destroying own process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
       p->pagedir = NULL;
+      if (this == p)
+        pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
 
   free (p);
 }
 
-/* Sets up the CPU for running user code in the current
-   thread.
+/* Sets up the CPU for running user code in the current thread.
    This function is called on every context switch. */
 void
 process_activate (void)
@@ -472,12 +456,16 @@ load (const char *file_name, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
+  if (thread_current ()->process == NULL)
+    goto done;
+
   /* Activate page directory. */
   process_activate ();
 
   /* Open executable file. */
   lock_acquire (&filesys_lock);
   file = filesys_open (file_name);
+  lock_release (&filesys_lock);
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
@@ -570,7 +558,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* We arrive here whether the load is successful or not. */
   if (!success)
     file_close (file);
-  lock_release (&filesys_lock);
 
   return success;
 }

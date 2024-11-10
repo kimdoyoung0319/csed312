@@ -29,6 +29,9 @@ file_open (struct inode *inode)
 {
   struct process *this = thread_current ()->process;
   struct file *file = calloc (1, sizeof *file);
+
+  ASSERT (this != NULL);
+
   if (inode != NULL && file != NULL)
     {
       file->inode = inode;

@@ -685,7 +685,7 @@ thread_schedule_tail (struct thread *prev)
     }
 }
 
-/* Schedules a new process.  At entry, interrupts must be off and
+/* Schedules a new thread.  At entry, interrupts must be off and
    the running process's state must have been changed from
    running to some other state.  This function finds another
    thread to run and switches to it.
