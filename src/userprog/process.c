@@ -229,7 +229,7 @@ process_wait (pid_t child_pid)
   /* If the child to wait is still alive, wait for it to exit. */
   child->waited = true;
   if (child->state == PROCESS_ALIVE)
-      thread_block ();
+    sema_down (&this->sema);
   intr_set_level (old_level);
 
   /* The child has exited. Get its exit status and clean it up. */
@@ -353,8 +353,8 @@ process_exit (int status)
      enabled after thread_exit() call which causes context switch. */
   intr_disable ();
 
-  /* Exiting process's children are orphaned. For processes who are not 
-     orphaned, their parent is responsible to destroy them. */
+  /* Exiting process's children are orphaned. Destroys dead children that 
+     their parents are responsible for destroying. */
   for (e = list_begin (&this->children); e != list_end (&this->children); )
     {
       child = list_entry (e, struct process, elem);
@@ -370,7 +370,7 @@ process_exit (int status)
   /* Close opened files. */
   for (e = list_begin (&this->opened); e != list_end (&this->opened); )
     {
-      next = list_next (e);
+      next = list_remove (e);
       fp = list_entry (e, struct file, elem);
       file_close (fp);
       e = next;
@@ -378,8 +378,11 @@ process_exit (int status)
 
   printf ("%s: exit(%d)\n", this->name, status);
 
+  /* For processes who are orphaned, they are responsible to destory themselves.
+     For those who are not orphaned, their parents are responsible to destroy 
+     children. */
   if (this->waited)
-    thread_unblock (par);
+    sema_up (&par->process->sema);
   else if (par == NULL || par->process == NULL)
     destroy_process (this);
 

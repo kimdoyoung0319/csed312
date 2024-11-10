@@ -67,7 +67,7 @@ syscall_handler (struct intr_frame *f)
   }
 }
 
-/* Dereference pointer BASE + INDEX * OFFSET, with a validity test. Returns
+/* Dereferences pointer BASE + INDEX * OFFSET, with a validity test. Returns
    4 byte chunk starting from BASE + OFFSET * INDEX if it passes the test. 
    Else, terminates current process. */
 static uint32_t
@@ -84,7 +84,7 @@ dereference (const void *base, int index, int offset)
   NOT_REACHED ();
 }
 
-/* Retrieve file pointer from file descriptor, FD. Returns NULL if it has
+/* Retrieves file pointer from file descriptor, FD. Returns NULL if it has
    failed to find a file with file descriptor of FD among current process's 
    opened files. This must be called within user process context. */
 static struct file *
@@ -275,7 +275,6 @@ open (void *esp)
 static uint32_t 
 filesize (void *esp)
 {
-  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
