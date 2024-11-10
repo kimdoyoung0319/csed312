@@ -19,7 +19,6 @@ struct process
     /* Owned by process.c. */
     pid_t pid;                    /* Process identifier. */
     int status;                   /* Exit status. */
-    bool success;                 /* Has execution of its child succeeded? */
     bool waited;                  /* Is its parent waiting on this? */
     char name[16];                /* Name. */
     enum process_state state;     /* Process state. */

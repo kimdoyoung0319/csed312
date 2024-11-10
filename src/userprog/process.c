@@ -31,6 +31,7 @@ struct process_exec_frame
   {
     char **argv;
     struct process *parent;
+    bool *success;
   };
 
 static struct process *make_process (struct process *, struct thread *);
@@ -59,7 +60,7 @@ process_execute (const char *cmd_line)
   char *cmd_line_copy, *pos, *token, **argv;
   struct process *this = thread_current ()->process;
   struct process_exec_frame frame;
-  bool file_not_found;
+  bool file_not_found, success = false;
   tid_t tid;
 
   ASSERT (this != NULL);
@@ -96,6 +97,7 @@ process_execute (const char *cmd_line)
   /* Create a new thread to be executed with ARGV. */
   frame.argv = argv;
   frame.parent = this;
+  frame.success = &success;
 
   tid = thread_create (argv[0], PRI_DEFAULT, start_process, &frame);
   if (tid == TID_ERROR)
@@ -105,7 +107,7 @@ process_execute (const char *cmd_line)
     }
 
   sema_down (&this->sema);
-  if (!this->success)
+  if (!success)
     return PID_ERROR;
 
   return (pid_t) tid;
@@ -123,7 +125,7 @@ start_process (void *frame_)
   void *esp, *cmd_line = pg_round_down (argv[0]);
   struct intr_frame if_;
   struct thread *cur = thread_current ();
-  bool load_success;
+  bool load_success, *success = frame->success;
 
   /* Initialize interrupt frame. */
   memset (&if_, 0, sizeof if_);
@@ -134,11 +136,11 @@ start_process (void *frame_)
   /* Load executable and make process. */
   cur->process = make_process (par, cur);
   load_success = load (argv[0], &if_.eip, &if_.esp);
-  par->success = load_success && (cur->process != NULL);
+  *success = load_success && (cur->process != NULL);
   sema_up (&par->sema);
 
   /* If load or process making failed, quit. */
-  if (!par->success)
+  if (!(*success))
     {
       palloc_free_page (argv);
       palloc_free_page (cmd_line);
