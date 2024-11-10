@@ -38,7 +38,7 @@ struct process_exec_frame
 static struct process *make_process (struct process *, struct thread *);
 static void destroy_process (struct process *);
 static thread_func start_process NO_RETURN;
-static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool load (const char *file_name, void (**eip) (void), void **esp);
 static void *push (void *, void *, int);
 
 /* Initialize top level process. This should be called after thread_init(). */

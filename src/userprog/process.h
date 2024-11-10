@@ -29,7 +29,7 @@ struct process
     struct list children;         /* List of child processes. */
     struct list_elem elem;        /* List element. */
 
-    /* Shared between syscall.c and process.c.*/
+    /* Shared between filesys/file.c and process.c.*/
     struct list opened;           /* List of opened files. */
   };
 
