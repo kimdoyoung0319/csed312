@@ -67,11 +67,11 @@ syscall_handler (struct intr_frame *f)
   }
 }
 
-/* Dereference pointer BASE + OFFSET * INDEX, with a validity test. Returns
+/* Dereference pointer BASE + INDEX * OFFSET, with a validity test. Returns
    4 byte chunk starting from BASE + OFFSET * INDEX if it passes the test. 
    Else, terminates current process. */
 static uint32_t
-dereference (const void *base, int offset, int index)
+dereference (const void *base, int index, int offset)
 {
   const uint8_t *base_ = base;
   void *uaddr = (void *) (base_ + offset * index);
