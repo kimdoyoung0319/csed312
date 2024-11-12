@@ -1,0 +1,25 @@
+rm -rf build
+mkdir -p build/devices
+mkdir -p build/filesys
+mkdir -p build/lib
+mkdir -p build/lib/kernel
+mkdir -p build/lib/user
+mkdir -p build/tests/filesys/base
+mkdir -p build/tests/userprog
+mkdir -p build/tests/userprog/no-vm
+mkdir -p build/threads
+mkdir -p build/userprog
+cp ../Makefile.build build/Makefile
+cd build && make grade
+make[1]: Entering directory '/root/pintos/src/userprog/build'
+gcc -m32 -E -nostdinc -I../.. -I../../lib -I../../lib/kernel -P ../../threads/kernel.lds.S > threads/kernel.lds.s
+gcc -m32 -c ../../threads/start.S -o threads/start.o -Wa,--gstabs -nostdinc -I../.. -I../../lib -I../../lib/kernel -DUSERPROG -DFILESYS -MMD -MF threads/start.d
+gcc -m32 -c ../../threads/init.c -o threads/init.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF threads/init.d
+gcc -m32 -c ../../threads/thread.c -o threads/thread.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF threads/thread.d
+gcc -m32 -c ../../threads/switch.S -o threads/switch.o -Wa,--gstabs -nostdinc -I../.. -I../../lib -I../../lib/kernel -DUSERPROG -DFILESYS -MMD -MF threads/switch.d
+gcc -m32 -c ../../threads/interrupt.c -o threads/interrupt.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF threads/interrupt.d
+gcc -m32 -c ../../threads/intr-stubs.S -o threads/intr-stubs.o -Wa,--gstabs -nostdinc -I../.. -I../../lib -I../../lib/kernel -DUSERPROG -DFILESYS -MMD -MF threads/intr-stubs.d
+gcc -m32 -c ../../threads/synch.c -o threads/synch.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF threads/synch.d
+gcc -m32 -c ../../threads/palloc.c -o threads/palloc.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF threads/palloc.d
+gcc -m32 -c ../../threads/malloc.c -o threads/malloc.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF threads/malloc.d
+gcc -m32 -c ../../devices/pit.c -o devices/pit.o -g -msoft-float -O -march=i686 -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -MMD -MF devices/pit.d

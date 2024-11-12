@@ -24,7 +24,7 @@ Pintos의 기존 구현은 둘 모두를 어느 정도 구현하지만, 프로�
 이러한 인터페이스 함수들을 구현하는 데 있어 한 가지 난점은, Pintos의 기존 구현은
 사용자 프로세스와 커널 스레드를 구분하지 않는다는 점이다. `thread.h`에 정의된
 기존의 `struct thread`의 코드를 살펴보면 다음과 같다.
-
+ 
 ```C
 /* From former version of threads/thread.h. */
 struct thread
@@ -848,12 +848,538 @@ Pintos와 같은 작은 운영체제나 메모리의 크기가 한정된 경우 
 ## System Calls
 
 ### Improvements
-<!-- To be filled by Taeho. -->
+기본적으로 User program에서 system call을 사용하기 위해서는 
+`lib/user/syscall.h` 에서 구현되어 있는 system call을 호출하기 위한
+인터페이스를 바탕으로 `userprog/syscall.c` 의 `syscall_handler()`를
+호출하게 되는 방식으로 작동된다. 따라서 기존에 구현되어 있는 인터페이스를 바탕으로 
+system call 이 호출되었을 때 호출한 number 에 맞는 기능을 수행하는 함수들을 구현하였다.
 
 ### Details and Rationales
-<!-- To be filled by Taeho. -->
+
+#### `dereference()`
+```C
+/* lib/user/syscall.c 
+#define syscall0(NUMBER) */
+...
+("pushl %[number]; int $0x30; addl $4, %%esp"       \
+    : "=a" (retval)                                  \
+    : [number] "i" (NUMBER)                          \
+    : "memory");                                     \
+...
+
+/* Dereferences pointer BASE + INDEX * OFFSET, with a validity test. Returns
+   4 byte chunk starting from BASE + OFFSET * INDEX if it passes the test. 
+   Else, terminates current process. */
+static uint32_t
+dereference (const void *base, int index, int offset)
+{
+  const uint8_t *base_ = base;
+  void *uaddr = (void *) (base_ + offset * index);
+
+  if (is_user_vaddr (uaddr))
+    return *((uint32_t *) uaddr);
+  else
+    process_exit (-1);
+
+  NOT_REACHED ();
+}
+```
+우선 본격적으로 system call을 구현하기에 앞서서 여러 system call이 실행되었을 때에도
+여러 인자들이 어떻게 전달되는지 확인해야 한다. 우선 `lib/user/syscall.c`에서 확인할 수 있는 것처럼
+user program에서 syscall 을 호출하게 된다면 실행되는 어셈블리 루틴 중에, syscall의 번호를 포함하여
+여러 인자들을 pushl을 통해 스텍 프레임에 전달해주는 것을 알 수 있다. 또한, 이후에 `int 0x30`을 통해
+Kernel mode로 변환하여 syscall_handler를 실행하도록 하는 과정을 알 수 있다. 이 과정을 거치며
+결과적으로 인자들은 스텍 프레임에 전달된다. 따라서 전달된 인자를 확인하기 위해 kernel 에서는 stack frame
+을 통해서 확인해야 하며 여러 인자들을 처리하기 위한 함수인 `dereference()`를 구현하였다. 이 함수에서는 
+`BASE + INDEX * OFFSET` 주소에서 `uint32_t` 만큼의 데이터를 읽어오는 함수이다. 또한, 해당 주소가
+안전한지 여부를 확인하기 위해 `is_user_vaddr` 을 통해 주소를 확인한 뒤에 데이터를 읽어오게 된다.
+User program으로부터 전달된 주소는 안전하지 않을 수 있기 때문에, 우선 확인하는 과정이 필요하지만 구현 시
+Overhead 가 너무 커지는 것을 방지하기 위해 `PHYS_BASE` 보다 작은 것만 확인하고 이후 문제가 생긴다면
+`page_fault` 를 통해 처리하는 방식으로 구현을 선택했다.
+
+#### `exit()`
+```C
+/* System call handler for exit(). */
+static void
+exit (void *esp)
+{
+  int status = (int) dereference (esp, 1, WORD_SIZE);
+  process_exit (status);
+}
+```
+현재 user program의 종료를 처리하는 함수로, 전달된 인자를 통해 
+exit code를 출력하게 된다. 일반적으로 0인 경우 문제가 없이 종료된 경우를 뜻한다.
+현재 user program의 구현은 kernel thread 에서 user program을 실행하기 위한
+process를 선언하여 사용하는 구조로 구현되어 있으므로, `exit` 에서도 마찬가지로 
+process를 종료하기 위한 `process_exit()` 에게 `status`를 전달하여 종료하게 된다.
+
+#### `get_user()` and `put_user()`
+```C
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static int
+get_user (const uint8_t *uaddr)
+{
+  int result;
+  asm ("movl $1f, %0; movzbl %1, %0; 1:"
+       : "=&a" (result) : "m" (*uaddr));
+  return result;
+}
+
+/* Writes BYTE to user address UDST.
+   UDST must be below PHYS_BASE.
+   Returns true if successful, false if a segfault occurred. */
+static bool
+put_user (uint8_t *udst, uint8_t byte)
+{
+  int error_code;
+  asm ("movl $1f, %0; movb %b2, %1; 1:"
+       : "=&a" (error_code), "=m" (*udst) : "q" (byte));
+  return error_code != -1;
+}
+```
+user address에서 1 byte를 읽어올 때 사용하도록 구현한 함수로, 예외처리를 위한 코드를
+추가하였다. result 에 1f를 저장하여 `movzbl` 과정 중 오류가 발생하며 `1f`로 점프하며, 
+result 에 -1을 저장하여 반환하게 된다. `movzbl` 중 예외가 발생하지 않는다면 
+result 에 읽어온 1 byte의 데이터가 저장되며 반환된다. `put_user` 의 경우에도 마찬가지로
+항상 `PHYS_BASE` 보다 낮은 주소 아래에서 실행되며, User address에 1 byte 의 데이터를 
+쓰기를 수행하게 된다.
+
+
+#### `verify_string()` & `verify_read()` & `verify_write()`
+```C
+/* Verifies null-terminated STR by dereferencing each character in STR until
+   it reaches null character. Return true if and only if all characters in STR
+   are valid. */
+static bool
+verify_string (const char *str_)
+{
+  char ch;
+  uint8_t *str = (uint8_t *) str_;
+  for (int i = 0; ; i++)
+    {
+      if (!is_user_vaddr (str + i) || (ch = get_user (str + i)) == -1)
+        return false;
+      
+      if (ch == '\0')
+        break;
+    }
+
+  return true;
+}
+
+
+/* Verifies read buffer BUF whose size is SIZE by trying to read a character
+   on each bytes of BUF. Return true if and only if all bytes in BUF are 
+   readable. */
+static bool
+verify_read (char *buf_, int size)
+{ 
+  uint8_t *buf = (uint8_t *) buf_;
+  for (int i = 0; i < size; i++)
+      if (!is_user_vaddr (buf + i) && (get_user (buf + i) == -1))
+        return false;
+  
+  return true;
+}
+
+/* Verifies write buffer BUF whose size is SIZE by trying to put a character
+   on each bytes of BUF. Return true if and only if all bytes in BUF are 
+   writable. This function fills 0 on BUF. */
+static bool
+verify_write (char *buf_, int size)
+{
+  uint8_t *buf = (uint8_t *) buf_;
+  for (int i = 0; i < size; i++)
+      if (!is_user_vaddr (buf + i) && put_user (buf + i, 0))
+        return false;
+  
+  return true;
+}
+```
+user program에서 제공하는 주소에서 데이터를 읽어오는 과정에서는 항상 유의해야 하는 것이 바로
+데이터가 올바른 데이터인지를 확인해야 한다. 따라서 이를 위해 구현한 함수로 `cmd_line` 등의 입력에서 
+string 을 읽어오는 경우에 `PHYS_BASE` 아래에 위치한 주소인 경우에만 수행하도록 확인한다.
+이후 `get_user()` 를 통해서 문자열을 하나씩 읽어오게 되고, 문자열의 끝인 `\0` 에 도달할 때까지
+string을 읽어오며 string 내부에 문제가 없는지 확인하게 된다. `verify_read()` 의 경우 입력받은
+buffer에 대해서 size 만큼의 byte 를 읽어올 때 읽을 수 있는지 여부를 마찬가지로 확인한다.
+`verify_write()` 의 경우에는 write buffer를 확인하는데, buffer를 확인하여 size 만큼에
+write을 할 수 있는지 여부를 확인하게 된다.
+
+
+#### `halt()`
+```C
+/* System call handler for halt(). */
+static void
+halt (void)
+{
+  shutdown_power_off ();  
+}
+```
+시스템을 종료할 떄 사용하는 system call 로 `shutdown_power_off()` 를 통해 
+`halt()` 를 구현하였다. 
+
+#### `exit()`
+```C
+/* System call handler for exit(). */
+static void
+exit (void *esp)
+{
+  int status = (int) dereference (esp, 1, WORD_SIZE);
+  process_exit (status);
+}
+```
+`exit()` 의 경우 status 를 입력받아 이를 바탕으로 process 를 exit 하는 함수를 구현하였으며,
+위에서 설명한 `process_exit()` 에게 status를 넘겨주며, 해당 함수를 통해 
+termination message 출력 후 exit 하는 과정을 수행하게 된다.
+
+#### `exec()`
+```C
+/* System call handler for exec(). */
+static uint32_t
+exec (void *esp)
+{
+  char *cmd_line = (char *) dereference (esp, 1, WORD_SIZE);
+  if (!verify_string (cmd_line))
+    return (uint32_t) TID_ERROR;
+
+  return (uint32_t) process_execute (cmd_line);
+}
+```
+`cmd_line` 을 통해 입력받은 인자들을 바탕으로 User program 을 실행하는 함수로,
+`cmd_line` 자체적으로 string에 문제가 있는지 여부를 확인하게 된다. 문제가 없는 경우
+마찬가지로 user program은 기존에 구현했던 process 를 바탕으로 실행되므로, 
+`process_execute()` 를 통해 `cmd_line` 을 전달하며 Process 를 실행하도록 구현했다.
+해당 함수 내에서 자식 thread 를 생성하는 방식으로 새로운 user program 이 실행된다.
+
+#### `wait()`
+```C
+/* System call handler for wait(). */
+static uint32_t
+wait (void *esp)
+{
+  tid_t tid = (tid_t) dereference (esp, 1, WORD_SIZE);
+  return (uint32_t) process_wait (tid);
+}
+```
+입력받은 pid를 가진 child process가 종료될 때 까지 기다리는 함수로, 종료된 이후 
+반환된 child process의 exit code를 반환하게 된다. 위에서 이미 소개한 것처럼 실제 wait 의 수행은 `process_wait()`을 통해 수행된다.
+
+#### `create()`
+```C
+/* Lock to ensure consistency of the file system. */
+struct lock filesys_lock;
+
+/* System call handler for create(). */
+static uint32_t
+create (void *esp)
+{
+  uint32_t retval;
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+  unsigned initial_size = dereference (esp, 2, WORD_SIZE);  
+
+  if (!verify_string (file))
+    return (uint32_t) false;
+
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) filesys_create (file, initial_size);
+  lock_release (&filesys_lock);
+
+  return retval;
+}
+```
+현재 file system 내에 새로운 파일을 생성하기 위해서 사용되는 system call 이다.
+design 시에는 file system 내에 sync 를 위한 자체적인 장치가 없다는 것은 알았지만,
+정확히 어떤 위치에서 lock이 필요한지 여부에 대해서는 많은 고민이 있었다. 이번 구현에서는
+`filesys_create()`, `filesys_remove()`, `filesys_open()` 과 같이 file system을 
+사용하게 되는 모든 함수들의 sync를 보장하기 위해서 사용할 `filesys_lock` 을 선언하였다.
+이 lock 을 통해서 각각의 함수의 실행을 atomic 하게 보장하여 context switch로 인한 
+문제가 발생하지 않도록 방지한다. `create()` 을 구체적으로 살펴보도록 하자. 우선, 인자로 받은 
+생성할 파일 명인 `file`과 파일의 크기인 `initial_size`를 입력받는다. 이후 file 또한,
+user program 에서 받아왔을 수 있으므로, 안전성을 검증한 뒤에 수행하게 된다.
+위에서 이미 언급한 것처럼 `filesys_lock을` 통해 file system의 수행에 대해서 atomic을 
+보장하게 되고, `file`, `inital_size`를 바탕으로 `filesys_create()` 을 수행하여
+파일을 생성하고 성공 여부를 반환하게 된다.
+
+#### `remove()`
+```C
+/* System call handler for remove(). */
+static uint32_t
+remove (void *esp)
+{
+  uint32_t retval;
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+
+  if (!verify_string (file))
+    return (uint32_t) false;
+
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) filesys_remove (file);
+  lock_release (&filesys_lock);
+
+  return retval;
+}
+```
+위의 create() 과 구현과 구조가 매우 유사하며, 마찬가지로 `verify_string()`과 
+`filesys_lock`, `filesys_remove()`을 통해 구현하였으며, 입력된 file 이름을 바탕으로
+file 을 제거하고, 성공 여부를 반환하게 된다.
+
+#### `open()`
+```C
+/* System call handler for open(). */
+static uint32_t
+open (void *esp)
+{
+  struct file *fp;
+  char *file = (char *) dereference (esp, 1, WORD_SIZE);
+
+  lock_acquire (&filesys_lock);
+  if (!verify_string (file) || (fp = filesys_open (file)) == NULL)
+    {
+      lock_release (&filesys_lock);
+      return (uint32_t) FD_ERROR;
+    }
+  lock_release (&filesys_lock);
+
+  return (uint32_t) fp->fd;
+}
+```
+file을 열고 해당하는 file descripter 를 반환하는 함수이다.
+입력받은 file 이름을 `verify_string()` 을 통해 확인하고, `filesys_open()` 을 통해
+file을 읽을 수 있는 file pointer를 반환받게 된다. 이 과정 또한 filesys_lock을 통해서 
+atomic 하도록 보장하게 된다. 또한, `filesys_open()` 을 통해 반환된 file pointer의
+file descripter를 반환하는 것으로 실행이 종료된다.
+
+#### `retrieve_fp()`
+```C
+/* Retrieves file pointer from file descriptor, FD. Returns NULL if it has
+   failed to find a file with file descriptor of FD among current process's 
+   opened files. This must be called within user process context. */
+static struct file *
+retrieve_fp (int fd)
+{
+  struct process *this = thread_current ()->process;
+  struct file *fp = NULL;
+  struct list_elem *e;
+
+  ASSERT (this != NULL);
+
+  for (e = list_begin (&this->opened); e != list_end (&this->opened); 
+       e = list_next (e))
+    {
+      fp = list_entry (e, struct file, elem);
+      if (fp->fd == fd)
+        break;
+    }
+  
+  if (fp == NULL || fp->fd != fd)
+    return NULL;
+  
+  return fp;
+}
+```
+`retrieve_fp()` 는 file descripter를 입력받아 현재 process에서 open
+되어 있는 file pointer를 반환하는 함수이다. 우선 system call 의 인자는 
+int type으로 된 file descripter이다. 하지만, 실제 file system 의 구현과 
+process 상에서 이를 관리하기 위해서는 int 하나만으로는 표현에 제한이 있으므로,
+`file.c` 에서 선언한 file pointer를 활용해서 구현했으므로, 입력받은 
+file descripter 를 그에 해당하는 file pointer 로 바꿔주는 역할을 위해
+추가적으로 구현하였다.
+
+#### `filesize()`
+```C
+/* System call handler for filesize(). Return -1 if given file descriptor is 
+   not a valid file descriptor. */
+static uint32_t 
+filesize (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if (fp == NULL)
+    return (uint32_t) -1;
+
+  return (uint32_t) file_length (fp);
+}
+```
+입력받은 file descripter의 file size를 반환하는 함수이다.
+이를 위해서 dereference() 를 통해 fd를 받아, 바로 위에서 설명한
+retrieve_fP() 를 통해 대응되는 file pointer로 반환하게 된다.
+file pointer를 통해 file_length() 를 호출하여 크기를 반환한다.
+
+#### `read()`
+```C
+
+/* System call handler for read(). Returns -1 if given file descriptor is not 
+   a valid file descriptor. Kills current process with exit status -1 if given
+   buffer pointer is invalid. */
+static uint32_t
+read (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *buffer = (void *) dereference (esp, 2, WORD_SIZE);
+  unsigned pos = 0, size = dereference (esp, 3, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if (!verify_write (buffer, size))
+    process_exit (-1);
+
+  if (fp == NULL && fp != STDIN_FILENO)
+    return (uint32_t) -1;
+
+  if (fd == STDIN_FILENO)
+    {
+      while (pos < size)
+        ((char *) buffer)[pos++] = input_getc ();
+      return (uint32_t) size;
+    }
+
+  return (uint32_t) file_read (fp, buffer, size);
+}
+```
+read() 에서는 buffer, pos, fd 를 입력받아 fd에 해당하는 파일을 읽어오는 
+역할을 수행한다. 이 중에서 fd 가 만약 0인 경우에는 키보드 입력을 받는 경우에
+해당하므로 input_getc() 를 통해서 키보드 입력을 받아 buffer에 적재한다.
+나머지 경우에는 해당하는 file pointer 를 찾아 buffer에 읽어오는 연산을 
+수행하게 된다. 앞선 open(), remove(), create() 같은 경우에는 
+file system 자체를 핸들링하는 함수이므로 lock 이 필요한 반면, 
+write(), read() 와 같은 함수는 개별적인 file 을 참조하는 부분으로 
+filesys_lock 이 필요하지 않게 된다.
+
+#### `write()`
+```C
+/* System call handler for write(). Returns 0 if it cannot write any byte at 
+   for some reason. */
+static uint32_t
+write (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *buffer = (void *) dereference (esp, 2, WORD_SIZE);
+  unsigned size = dereference (esp, 3, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if ((fp == NULL && fd != STDOUT_FILENO) || !verify_read (buffer, size))
+    return (uint32_t) 0;
+
+  if (fd == STDOUT_FILENO)
+    {
+      putbuf ((char *) buffer, size);
+      return (uint32_t) size;
+    }
+
+  return (uint32_t) file_write (fp, buffer, size);
+}
+```
+file descripter, write을 위한 buffer, size 를 입력받아 해당 file에 size 만큼
+buffer의 내용을 입력하는 과정을 수행하게 되는 함수이다. dereference 를 통해서 
+입력 인자를 불러온 뒤에 retrieve_fp() 를 통해 file pointer로 변환하게 된다.
+과정 중에 fd가 1인 경우에는 console 에 출력해야 하므로, putbuf() 를 통해 전체 데이터를
+출력하게 된다. 나머지 경우에는 file_write() 을 통해 write 이 수행된다.
+
+#### `seek()`
+```C
+/* System call handler for seek(). */
+static void
+seek (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  unsigned position = dereference (esp, 2, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if (fp == NULL)
+    return;
+
+  file_seek (fp, position);
+}
+```
+seek() 는 현재 fd 에서 file pointer가 가리키는 위치를 특정 position 으로
+이동하는 역할을 수행하는 함수이다. 기본적으로는 file pointer에서 Position 으로 
+위치를 변경하는 역할을 수행한다. 파일의 끝을 넘지 않도록 하며 기존 file_seek()를
+기반으로 구현하였다.
+
+#### `tell()`
+```C
+/* System call handler for tell(). Returns -1 if given file descriptor is not 
+   a valid file descriptor. */
+static uint32_t
+tell (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if (fp == NULL)
+    return (uint32_t) -1;
+
+  return (uint32_t) file_tell (fp);
+}
+```
+마찬가지로 기존에 구현된 file_tell() 을 바탕으로 구현하였으며, esp 에서 인자를
+불러와서 이를 바탕으로 파일 포인터의 현재 오프셋을 반환하게 된다.
+
+#### `close()`
+```C
+/* System call handler for close(). Does notihing if given file descriptor is 
+   not a valid file descriptor. */
+static void
+close (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  file_close (fp);
+}
+```
+현재 file descripter를 입력으로 받아 file pointer를 닫는 역할을 수행하며,
+file_close() 를 통해 구현하였다. file_close() 에서는 기존에 분석한 바와 같이
+file_allow_write() 을 통해 쓰기를 허용하고 inode_close(), free(file) 을 통해
+file 을 닫게 된다.
 
 ### Discussions
-<!-- To be filled by Taeho. -->
+
+#### How should we check address from user program?
+위에서 언급한 바와 같이 초반에 해당 위치가 전부 안전한지를 확인하는 구현은 
+page_fault와 같은 예외로 넘어가지 않는 장점이 있지만, 매번 user program 에서
+전달된 address를 확인해야 하는 큰 overhead가 발생할 수 있으므로, 이를 유념하여
+사전에는 보다 간단히 PHYS_BASE 와 비교하는 연산을 통해 상대적으로 user memory space
+여부만 확인한 뒤에 연산을 수행하는 방식으로 구현하였으며, 만약 이후에 문제가 발생한다면
+page_fault 가 발생하도록 구현하였다. 대신에 string을 읽어오는 경우나 혹은 여러
+write, read 와 같이 특정 buffer에 작성이나 읽어오는 경우에는 따로 함수를 추가적으로 
+구현하여 해당 주소가 문제가 없는지 여부를 한 번 더 확인하도록 구현하였다.
+
+#### How should we manage with multi user process?
+file system 에서는 자체적으로 Lock 이 없어서 여러 프로세스가 동시에 file system에
+쓰기 읽기 등의 작업을 수행할 경우 문제가 발생할 수 있다. 따라서 각 system call 에서는
+file system을 사용하는 경우에는 `filesys_lock` 을 통해서 항상 lock 을 먼저 취득하고 
+이후에 lock 소유했을 때만 해당 연산을 수행하여 서로 접근하여 문제가 발생할 가능성을
+차단하는 방식으로 구현하였다.
+
+#### difference between file pointer and file descripter?
+우선 file pointer를 바탕으로 file descritper를 얻는 과정에서 
+단순히 casting 을 통해 file descripter 를 얻는 방식 대신 
+struct file 의 구조체를 변경하여 핀토스 공식 문서에 있는 바와 같이 
+메모리 안전성을 위해서 file descripter와 Kernel space 사이의 모호함을
+없애기 위해서 내부에 따로 file descripter 를 선언하여 관리하였으며,
+각 process 마다 내부에 opend list 를 통해 열려있는 file pointer들을
+함께 관리하는 방식으로 구현하였다.
+
 
 ## Conclusion
+
+![test result](image.png)
+위의 이미지와 같이 모든 테스트를 통과할 수 있었으며,
+project 2의 process termination message, argument passing, 
+system calls, denying writes to executables 를 모두 구현하였다.
+
+기존의 디자인 레포트에서는 struct process를 따로 고려하지 않고, struct thread 를
+변환하는 방식으로 구현을 하려 했지만, wait() 과 같이 부모 프로세스가 기다리고 있는 상황에
+자녀 프로세스가 먼저 종료되는 경우에는 thread 가 지워지게 되는데, 이러한 구현 방식에서는 
+process의 exit status 와 같은 정보들이 모두 사라지게 된다. 따라서 디자인 레포트와 다르게 
+struct process를 선언하여 이를 토대로 종료 후에도 status 등을 Process 내에
+저장하여 이후 wait() 에게 전달하게 된다.
+
+이번 구현 과정에서 확장 가능성을 특히 염두에 두었으며, system call 의 구현 과정에서도 
+system call 의 기능들을 직접적으로 구현하기보단, process 의 method 에서 구현하여
+이를 활용하는 방식으로 구현하여, 앞으로 확장 가능성에 대비하기 위해 이를 염두에 둔 채로 
+구현을 완료했다.
