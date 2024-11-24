@@ -64,9 +64,11 @@ fault_addr을 확인하여 Supplemental Page Table을 직접 확인하여 load �
 여부를 확인하고 아니라면 해당 주소가 32 bytes 이내인지 여부, PHYS_BASE 로부터 8MB 
 이내인지 여부를 확인해야 한다. 만약 전부 해당한다면, user mode 인 경우에는 f->esp를 
 키워주고, kernel mode인 경우에는 기존에 실행되고 있던 user thread에 저장된 stack
-pointer를 저장하여 해당 esp를 growth 해주는 방식으로 구현하고자 한다. 이 때 growth
-시에는 pg_round_down (fault_addr) 에 해당하는 주소에 새로운 page를 할당하는 
-방식으로 구현하고자 한다.
+pointer를 저장하여 해당 esp를 growth 해주는 방식으로 구현하고자 한다. 이 때 사용되는
+pointer는 syscall.c에서 syscall_handler()가 실행될 때 thread에 f->esp를 
+저장하여 놓고, 이후 page_fault() 시에 저장한 그 pointer 값을 사용하는 방식으로 
+구현하고자 한다. 마지막으로 stack growth 시에는 pg_round_down (fault_addr) 
+에 해당하는 주소에 새로운 page를 할당하는 방식으로 구현하고자 한다.
 
 ## File Memory Mapping
 <!-- TODO: To be filled by Doyoung. -->
