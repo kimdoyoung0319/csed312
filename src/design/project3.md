@@ -302,6 +302,12 @@ pointer는 syscall.c에서 `syscall_handler()`가 실행될 때 thread에 `f->es
 
 ## Swap Table
 ### Basic Descriptions and Limitations
+<!-- 
+  Requirement 문서에서 각 테이블이 각 스레드에 한정되어 지역적으로 선언되어야
+  하는지 혹은 전역적으로, 모든 스레드가 공유하도록 선언해야 하는지를 결정해야
+  한다고 합니다. 프레임 테이블이나 스왑 테이블 부분 서술하실 때 이 부분
+  염두해 주세요.
+-->
  당연하게도 대부분의 HW는 제한된 physical memory space를 갖고 있다. 이 경우 
 제한된 메모리 사이즈를 갖고 있기 때문에 해당 메모리가 이미 전부 사용되고 있다면, 
 기존에 사용하던 혹은 잘 사용하지 않은 메모리 영역을 비우고, 새롭게 데이터를 읽어와야 한다.
