@@ -8,7 +8,7 @@
   한다고 합니다. 프레임 테이블이나 스왑 테이블 부분 서술하실 때 이 부분
   염두해 주세요.
 -->
-<!-- TODO: To be filled by Taeho. -->
+<!-- 추가로 여기서 page pinned 도 설명해야 한다. -->
 ### Basic Descriptions
 <!-- TODO: To be filled by Taeho. -->
 ### Limitations and Necessity
@@ -363,17 +363,34 @@ swap table이 만약 각 쓰레드에 한정되어 지역적으로 선언될 경
 ### Design Proposal
  swap table은 공식 문서에서 제안한 것처럼 struct bitmap을 기반으로 구현하고자 한다.
 vm/swap.c 에 새롭게 파일을 생성하고 해당 파일 내에 새로운 변수를 저장하고자 한다.
-
-
+<!-- 구조를 선언해줘야 한다. 아직 구조를 자세히 설명을 안해놨다.-->
 
 ## On Process Termination
-<!-- TODO: To be filled by Taeho. -->
+### Basic Descriptions and Limitations
+ 모든 실행이 끝나거나 혹은 문제가 발생하여 process 가 종료될 때에는 위에서 선언해준 모든
+데이터를 할당 해제한 뒤에 종료해야 한다. 따라서 이를 위해서 위에서 선언한 frame table, 
+supplementary page table, file memory mapping, swap table 모든 것들에 
+대해서 할당을 해제해야 하며, lock 과 관련된 부분이나 혹은 열려있는 파일 등과 같이 유념하여 
+할당을 해제해야 할 부분들이 존재하지만, 현재 구현에서는 userprog/process.c 에서 정의된 
+process_exit()와 destory_process() 을 통해 수행되고 있으며, 현재 구현은 process에서
+열려 있는 file pointer 들을 close 해주며, directory 들을 free 해주는 방식으로 구현되어 
+있다. 하지만 이러한 방식으로는 앞서서 구현된 다양한 데이터들을 해제하지 못하며, swap slot 
+들에 사용된 여러 데이터 또한 남아있는 채로 종료되게 된다. 따라서 해당 문제를 해결하고자 한다.
 
-### Basic Descriptions
-<!-- TODO: To be filled by Taeho. -->
-
-### Limitations and Necessity
-<!-- TODO: To be filled by Taeho. -->
-
-### Design Proposal
-<!-- TODO: To be filled by Taeho. -->
+### Necessity and Design Proposal
+ 우선 on process termination 에 해당하는 구현은 userprog/process.c에 정의된,
+process_exit() 함수 내에서 구현을 하고자 한다. 처음으로 Supplementary Page Table의 
+경우에도 위와 유사하다. 이번에는 모든 할당된 Page를 해제해줘야 하는데, 이 경우 dirty 를 
+확인하여 dirty 인 경우 디스크에 write 하고 그 이후애 해제해주는 방식으로 구현해야 한다.
+Swap Table에서는 현재 process가 사용하고 있는 (혹은 대응되는) swap slot들을 모두 
+찾아서 swap table에서 이를 해제하도록 변경해야 한다. File Memory Mapping 의 경우 
+기존에는 close_file() 만 수행했으나, load 과정 중에 열렸던 파일을 포함하여 S-page 
+table 에서 저장되어 있는 file 에 대한 정보도 함께 확인하여 모든 file 을 close 해줘야
+하는 방식으로 구현하고자 한다. 또한, dirty 를 추가적으로 함께 확인하여 수정되었다면 
+다시 write 해주는 과정이 필요하고, 그 이후 해당 memory mapping을 해제해주는 방식으로
+현재 process가 가진 전체 file memory mapping 을 해제해주면 된다. 마지막으로 
+해제해야 할 것은 frame table 인데, 이 경우 현재 종료되려고 하는 process가 
+사용하고 있는 frame 자체를 해제하는 것이 필요하다. 따라서 현재 process 에 대응되는 
+frame을 frame table에서 찾아서 이를 해제하고, 이 때 만약 해당 frame이 dirty 인 
+상황이라면 (수정되었다면) 해당 frame 의 데이터를 디스크에 write 하는 방식으로 
+저장해줘야 한다. 이후 frame을 해제하며 process 를 종료할 수 있게 된다.
