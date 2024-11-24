@@ -302,12 +302,6 @@ pointer는 syscall.c에서 `syscall_handler()`가 실행될 때 thread에 `f->es
 
 ## Swap Table
 ### Basic Descriptions and Limitations
-<!-- 
-  Requirement 문서에서 각 테이블이 각 스레드에 한정되어 지역적으로 선언되어야
-  하는지 혹은 전역적으로, 모든 스레드가 공유하도록 선언해야 하는지를 결정해야
-  한다고 합니다. 프레임 테이블이나 스왑 테이블 부분 서술하실 때 이 부분
-  염두해 주세요.
--->
  당연하게도 대부분의 HW는 제한된 physical memory space를 갖고 있다. 이 경우 
 제한된 메모리 사이즈를 갖고 있기 때문에 해당 메모리가 이미 전부 사용되고 있다면, 
 기존에 사용하던 혹은 잘 사용하지 않은 메모리 영역을 비우고, 새롭게 데이터를 읽어와야 한다.
@@ -349,15 +343,22 @@ eviction 시에(physical memory가 비워질 때)만 비어있는 slot을 찾아
 필요하다. 우선 swap out은 memory에서 page가 비워지며 swap slot에 저장되어야 할 때 
 swap table을 통해서 비어있는 swap slot을 선택하고, 해당 slot에 `block_write()`을
 통해서 page의 데이터를 입력해야 하고, 상태를 비어있지 않도록 업데이트를 해야 한다. 이 때
-사용되는 것이 위에서 소개한 eviction policy 이며, 현재 physical memory 상에 저장된 
-page 중에서 어떤 page를 선정하여 eviction 할 지를 정해야 한다. 이렇게 정해진 page가
-eviction 되어 swap disk 에 저장된다고 이해할 수 있다. 반대로 swap in 시에는 
-대표적인 원인으로 page fault 발생 시에는 swap disk 에 저장되어 있는 page를 
+사용되는 것이 위에서 소개한 eviction policy 이며, 현재 physical memory 상에 
+저장된 page 중에서 어떤 page를 선정하여 eviction 할 지를 정해야 한다. 이렇게 정해진 
+page가 eviction 되어 swap disk 에 저장된다고 이해할 수 있다. 반대로 swap in 
+시에는 대표적인 원인으로 page fault 발생 시에는 swap disk 에 저장되어 있는 page를 
 physical memory로 다시 옮겨야 하므로, 이 때 새로운 page를 할당하고, 해당 page에 
-`block_read()` 를 통해 읽어온 swap slot의 데이터를 옮겨줘야 한다. 또한, 기존 데이터가 
-저장되어 있는 slot은 할당을 해제해줘야 한다. 마지막으로 swap free의 경우에는 swap in처럼
-데이터가 읽혀서 physical memory에 있는 경우거나 혹은 해당 slot을 이용하는 process가 
-종료된 경우에도 사용하고 있던 모든 slot을 free 해줘야 한다.
+`block_read()` 를 통해 읽어온 swap slot의 데이터를 옮겨줘야 한다. 또한, 기존 
+데이터가 저장되어 있는 slot은 할당을 해제해줘야 한다. 마지막으로 swap free의 경우에는 
+swap in처럼 데이터가 읽혀서 physical memory에 있는 경우거나 혹은 해당 slot을 
+이용하는 process가 종료된 경우에도 사용하고 있던 모든 slot을 free 해줘야 한다. 
+
+ 또한, swap disk 는 실행되는 여러 process 사이에서 함께 공유되는 영역이다. 따라서 
+swap table이 만약 각 쓰레드에 한정되어 지역적으로 선언될 경우 오히려 관리하는데 
+더 많은 overhead가 발생할 수 있다. 따라서 전역적으로 vm/swap.c 에 선언하는 방식으로
+관리한다면, 한 개의 bitmap을 통해 전체 disk 를 효율적으로 관리할 수 있을 것이다. 
+대신에 이 경우 lock 을 통해서 해당 bitmap 에 접근 및 연산 수행 시 atomic 을 
+보장해주는 것이 필요하게 될 것이다.
 
 ### Design Proposal
  swap table은 공식 문서에서 제안한 것처럼 struct bitmap을 기반으로 구현하고자 한다.
@@ -367,9 +368,12 @@ vm/swap.c 에 새롭게 파일을 생성하고 해당 파일 내에 새로운 �
 
 ## On Process Termination
 <!-- TODO: To be filled by Taeho. -->
+
 ### Basic Descriptions
 <!-- TODO: To be filled by Taeho. -->
+
 ### Limitations and Necessity
 <!-- TODO: To be filled by Taeho. -->
+
 ### Design Proposal
 <!-- TODO: To be filled by Taeho. -->
