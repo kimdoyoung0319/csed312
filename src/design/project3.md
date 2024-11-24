@@ -262,7 +262,7 @@ page_fault (struct intr_frame *f)
 을 통해서 구현되어 있다. 해당 handler의 실행 과정 중에서 fault가 발생한
 address에 따라서 stack growth 가 필요한 경우 실행할 수 있도록 구현을 수정해야 한다.
  우선 필요한 것은 입력받은 인터럽트 프레임 내에서 해당 주소가 어떤 상황인지 확인해야 한다.
-fault_addr을 확인하여 stack growth 가 필요한지 여부를 알아야 한다. 공식 문서에서 
+`fault_addr`을 확인하여 stack growth 가 필요한지 여부를 알아야 한다. 공식 문서에서 
 확인할 수 있는 것처럼 x86 에서 기본적으로 esp 아래의 주소를 참조하는 경우는 PUSH 혹은
 PUSHA 인스트럭션이 존재하는데 각각 4 btye, 32 byte 아래의 주소를 참조하게 된다. 
 따라서 최대 32 byte 이내의 주소를 참조했을 때 stack growth를 통해 지원해야 하며, 
@@ -270,25 +270,25 @@ PUSHA 인스트럭션이 존재하는데 각각 4 btye, 32 byte 아래의 주소
 마찬가지로 공식 문서에서 추천하는 것처럼 8 MB (PHYS_BASE로 부터)를 최대 stack size로 
 제한하여, 이 영역을 초과하게 된다면 heap 영역까지 초과할 수 있으므로 마찬가지로 8 MB를 
 초과한 경우에도 프로세스를 종료해야 한다. 마지막으로 확인할 부분은 당연하게도 할당되었는지 
-여부를 확인해야 한다. 즉, supplemental Page Table을 확인하여 fault_addr에 
+여부를 확인해야 한다. 즉, Supplemental Page Table을 확인하여 `fault_addr`에 
 해당하는 page가 이미 로드가 되어있는지 여부를 확인하여, 해당 page가 존재할 경우에는 
 확장을 따로 수행하지 않는 대신에, write이 가능한 경우에는 해당 page를 다시 
 memeory로 불러와야 한다. 또한, 마지막으로 필요한 것은 user mode가 아닌 
-kernel mode 에서 실행되었을 경우에는 f->esp가 kernel 의 stack 이므로 stack
+kernel mode 에서 실행되었을 경우에는 `f->esp`가 kernel 의 stack 이므로 stack
 growth를 구현하기 위해서는 user thread의 esp를 따로 저장하고, 그 stack을 
 키워주는 부분을 고려해야 한다.
 
 ### Design Proposal
- 위에서 언급한 바와 같이 exception.c 의 page_fault() 를 수정하는 방식으로 구현한다.
+ 위에서 언급한 바와 같이 exception.c 의 `page_fault()` 를 수정하는 방식으로 구현한다.
 기존 코드에 존재하는 not_present, write, user를 바탕으로 not_present 시에는 
-fault_addr을 확인하여 Supplemental Page Table을 직접 확인하여 load 되었는지 
-여부를 확인하고 아니라면 해당 주소가 32 bytes 이내인지 여부, PHYS_BASE 로부터 8MB 
-이내인지 여부를 확인해야 한다. 만약 전부 해당한다면, user mode 인 경우에는 f->esp를 
+`fault_addr`을 확인하여 Supplemental Page Table을 직접 확인하여 load 되었는지 
+여부를 확인하고 아니라면 해당 주소가 32 bytes 이내인지 여부, `PHYS_BASE` 로부터 8MB 
+이내인지 여부를 확인해야 한다. 만약 전부 해당한다면, user mode 인 경우에는 `f->esp`를 
 키워주고, kernel mode인 경우에는 기존에 실행되고 있던 user thread에 저장된 stack
 pointer를 저장하여 해당 esp를 growth 해주는 방식으로 구현하고자 한다. 이 때 사용되는
-pointer는 syscall.c에서 syscall_handler()가 실행될 때 thread에 f->esp를 
-저장하여 놓고, 이후 page_fault() 시에 저장한 그 pointer 값을 사용하는 방식으로 
-구현하고자 한다. 마지막으로 stack growth 시에는 pg_round_down (fault_addr) 
+pointer는 syscall.c에서 `syscall_handler()`가 실행될 때 thread에 `f->esp`를 
+저장하여 놓고, 이후 `page_fault()` 시에 저장한 그 pointer 값을 사용하는 방식으로 
+구현하고자 한다. 마지막으로 stack growth 시에는 `pg_round_down (fault_addr)` 
 에 해당하는 주소에 새로운 page를 할당하는 방식으로 구현하고자 한다.
 
 ## File Memory Mapping
@@ -301,19 +301,63 @@ pointer는 syscall.c에서 syscall_handler()가 실행될 때 thread에 f->esp�
 <!-- TODO: To be filled by Doyoung. -->
 
 ## Swap Table
-<!-- 
-  Requirement 문서에서 각 테이블이 각 스레드에 한정되어 지역적으로 선언되어야
-  하는지 혹은 전역적으로, 모든 스레드가 공유하도록 선언해야 하는지를 결정해야
-  한다고 합니다. 프레임 테이블이나 스왑 테이블 부분 서술하실 때 이 부분
-  염두해 주세요.
--->
-<!-- TODO: To be filled by Taeho. -->
-### Basic Descriptions
-<!-- TODO: To be filled by Taeho. -->
-### Limitations and Necessity
-<!-- TODO: To be filled by Taeho. -->
+### Basic Descriptions and Limitations
+ 당연하게도 대부분의 HW는 제한된 physical memory space를 갖고 있다. 이 경우 
+제한된 메모리 사이즈를 갖고 있기 때문에 해당 메모리가 이미 전부 사용되고 있다면, 
+기존에 사용하던 혹은 잘 사용하지 않은 메모리 영역을 비우고, 새롭게 데이터를 읽어와야 한다.
+하지만, pintos에서는 memory mapping이 존재하지 않는 상황이라 읽어와야 하는 데이터가 
+필요한 경우에도 읽지 못하고 정지되게 된다.
+
+ 이 때 현재 메모리가 부족하여 메모리를 비워야 할 경우에 사용하는 영역이 바로 swap disk
+이다. disk 상에 존재하는 영역으로, 위의 상황처럼 physical memory가 부족한 경우 
+이용할 수 있는 공간이다. 이 때 메모리에서 swap disk로 넘어가는 것을 swap out, 반대로 
+메모리로 불러오는 것을 swap in 이라고 한다. 현재 pintos 에서는 이러한 swap disk 는
+`struct block`을 통해 구현되어 있다. 각 block은 sector(512 B) 단위로 구성되어 
+있으며, swap-in, out은 page 단위로 수행되기 때문에 pintos 내에서는 8개의 sector가
+한 개의 swap slot으로 구성된다고 이해할 수 있다. 또한, 각 역할에 따라 block은 한 개씩
+정의되어 있고, `block_get_role()` 을 통해 해당하는 역할(`BLOCK_SWAP`)에 맞는 block을
+가져와서 사용할 수 있게 된다. 공식 문서에 있는 바와 같이 swap disk는 pintos-mkdisk
+swap.dsk 명령어와 --swap-size 옵션을 통해 원하는 용량을 가진 swap disk를 
+생성할 수 있다. 이러한 swap disk의 한 단위인 swap slot은 page의 크기와 동일한 
+영역으로, 연속된 디스크 영역이라고 생각하면 된다. swap disk의 목적 자체가 physical 
+memory에 저장된 page를 옮기거나, 다시 저장하는 역할로 수행되므로 이에 맞게 단위를 page 
+size(4 KB)인 단위를 swap slot이라고 한다. 당연히 swap slot 또한, page-aligned 
+되어야 하며, 이러한 slot을 관리할 때 사용하는 데이터를 바로 swap table이라 정의할 수 
+있다. 따라서 swap table은 각 slot이 사용되고 있는지 여부를 저장하고 있어야 하고, 이후 
+교체를 위해서 필요한 정보(최근 사용 여부)들을 함께 저장하여 표기해야 한다. 현재 pintos 
+상에서는 struct block 만 구현되어 있는 상태로, 다른 연산들은 전혀 정의되어 있지 않은 
+상황이다. 따라서 처음에 서술한 바와 같이 physical memory가 부족하게 된다면 더 이상 
+실행할 수 없으므로 이를 해결해야 한다.
+
+### Necessity
+ swap table은 위에서 설명한 것처럼 swap slot을 관리하기 위한 table이다. 따라서 각 
+slot 이 현재 사용되고 있는지, 혹은 비어있는지 여부 등을 기록하고 있어야 한다. 또한, 
+physical memory 상의 page가 비워지는 경우라면, 해당 page를 저장하기 위한 비어있는
+swap slot을 선택하여 기록할 수 있어야 하며, 반대로 저장된 것을 불러오는 경우거나 혹은
+해당 swap slot을 사용하는 process가 종료된 경우에도 영역을 지워야 하는 것을 유념해야
+한다. 또한, swap disk 라고 해서 전체 executable data를 미리 저장해놓고 있거나, 
+혹은 할당할 slot을 사전에 정의해서는 안된다. 따라서 lazy allocation을 바탕으로 하여
+eviction 시에(physical memory가 비워질 때)만 비어있는 slot을 찾아서 할당해야 한다.
+
+ 이러한 swap table을 관리하기 위해서는 크게 swap out, swap in, swap free가 
+필요하다. 우선 swap out은 memory에서 page가 비워지며 swap slot에 저장되어야 할 때 
+swap table을 통해서 비어있는 swap slot을 선택하고, 해당 slot에 `block_write()`을
+통해서 page의 데이터를 입력해야 하고, 상태를 비어있지 않도록 업데이트를 해야 한다. 이 때
+사용되는 것이 위에서 소개한 eviction policy 이며, 현재 physical memory 상에 저장된 
+page 중에서 어떤 page를 선정하여 eviction 할 지를 정해야 한다. 이렇게 정해진 page가
+eviction 되어 swap disk 에 저장된다고 이해할 수 있다. 반대로 swap in 시에는 
+대표적인 원인으로 page fault 발생 시에는 swap disk 에 저장되어 있는 page를 
+physical memory로 다시 옮겨야 하므로, 이 때 새로운 page를 할당하고, 해당 page에 
+`block_read()` 를 통해 읽어온 swap slot의 데이터를 옮겨줘야 한다. 또한, 기존 데이터가 
+저장되어 있는 slot은 할당을 해제해줘야 한다. 마지막으로 swap free의 경우에는 swap in처럼
+데이터가 읽혀서 physical memory에 있는 경우거나 혹은 해당 slot을 이용하는 process가 
+종료된 경우에도 사용하고 있던 모든 slot을 free 해줘야 한다.
+
 ### Design Proposal
-<!-- TODO: To be filled by Taeho. -->
+ swap table은 공식 문서에서 제안한 것처럼 struct bitmap을 기반으로 구현하고자 한다.
+vm/swap.c 에 새롭게 파일을 생성하고 해당 파일 내에 새로운 변수를 저장하고자 한다.
+
+
 
 ## On Process Termination
 <!-- TODO: To be filled by Taeho. -->
