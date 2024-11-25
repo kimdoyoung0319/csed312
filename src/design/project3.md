@@ -175,16 +175,30 @@ SPT를 새로 구현하고, 이러한 SPT를 페이지 폴트 핸들러가 참�
 /* Maybe into vm/spt.h. */
 struct spte 
   {
-    bool is_swapped;
+    int size;
+    bool swapped;
+    void *uaddr;
+    mapid_t mapid;
     block_sector_t index;
     struct hash_elem elem;
   }
 ```
-`spte` 구조체는 SPTE를 나타내기 위한 구조체이다. `struct spte`는 먼저, 해당 
-SPTE에 대응되는 페이지가 현재 스왑 블록에 존재하는지 혹은 파일 시스템 블록에 
-존재하는지를 나타내기 위한 `is_swapped` 멤버를 가지고 있다. 또, 해당 블록에서
-어떤 섹터에 해당 페이지가 존재하는지를 나타내기 위한 멤버로 `index`를 가지고 
-있으며, 해시 테이블에 해당 구조체를 추가하기 위한 원소로 `elem`을 가지고 있다.
+`spte` 구조체는 SPTE를 나타내기 위한 구조체이다. `struct spte`는 먼저, 해당
+페이지가 4 KiB 공간 내에서 실제로 데이터를 가지고 있는 공간이 얼마인지를 
+나타내기 위한 `size` 멤버를 가지고 있다. 이는 해당 크기를 넘어가는 바이트들을
+불필요하게 블록에서 읽어들이지 않고, 해당 공간을 그냥 0으로 채우기 위해 
+존재한다. 또한, 해당 SPTE에 대응되는 페이지가 현재 스왑 블록에 존재하는지 혹은 
+파일 시스템 블록에 존재하는지를 나타내기 위한 `swapped` 멤버를 가지고 있다. 
+`uaddr`은 해당 SPTE에 연관된 페이지의 사용자 영역 가상 주소이다.
+
+
+또한, 해당 SPTE가 만약 메모리 파일 대응으로 가상 주소 공간에 대응된 파일이라면,
+해당 SPTE와 연관된 대응의 식별자(map identifier)를 저장하기 위한 `mapid` 멤버를
+가지고 있다. 만약 해당 SPTE와 연관된 페이지가 메모리 파일 대응으로 적재되는
+페이지가 아니라면 `mapid`는 `MAPID_ERROR`로 초기화되어 해당 페이지가 메모리
+대응 파일로 대응된 페이지가 아님을 나타낸다. 또, 해당 블록에서 어떤 섹터에 해당 
+페이지가 존재하는지를 나타내기 위한 멤버로 `index`를 가지고 있으며, 해시 
+테이블에 해당 구조체를 추가하기 위한 원소로 `elem`을 가지고 있다.
 
 #### `struct process`
 ```C
@@ -220,9 +234,11 @@ page_fault (struct intr_frame *f)
     1. Check if current process's SPT has an entry about the faulting page.
     2. If the SPT does not have such SPTE, terminate the malicious user process.
     3. Else, according to the information in the entry, allocate a physical 
-       frame which the page would be loaded into.
+       frame which the page would be loaded into. This is done with the frame
+       table.
       - If the physical page frame is full, evict a frame by LRU-approximating
         page replacement algorithm.
+      - Also, find the swap slot by the swap table.
       - Then, modify the evicted page's SPTE so that it now holds the block and
         sector where the page is evicted.
     4. Load the faulting page into the frame using block_read().
@@ -490,13 +506,162 @@ pointer는 syscall.c에서 `syscall_handler()`가 실행될 때 thread에 `f->es
 에 해당하는 주소에 새로운 page를 할당하는 방식으로 구현하고자 한다.
 
 ## File Memory Mapping
-<!-- TODO: To be filled by Doyoung. -->
+사용자 프로세스가 파일을 읽어들일 때, `read()` 시스템 호출을 사용해 해당 파일의
+내용을 미리 확보된 메모리 공간에 한 번에 읽어들일 수도 있지만, 다른 방법으로
+사용자 프로세스의 가상 주소 공간의 일부를 해당 파일에 대응시켜 해당 파일을 
+필요할 때만 물리적 페이지에 읽어들일 수도 있다. 이러한 대응을 이용한 파일 입출력
+방식을 메모리 대응 파일(memory mapped file)이라 칭한다. 메모리 대응 파일은
+일반적인 `read()` 시스템 호출을 이용한 방식과 비교하였을 때, 파일을 읽어들이기
+위한 디스크 입출력이 필요할 때만 이루어진다는 특징이 있다. 만약 읽어들일 파일의
+크기가 작다면 파일을 미리 메모리에 적재하는 `read()`를 이용한 방식이 효과적일
+수 있지만, 용량이 큰 파일을 읽어들일 때는 필요한 부분만을 메모리에 적재하는
+메모리 대응 방식이 효과적일 것이다.
+
 ### Basic Descriptions
-<!-- TODO: To be filled by Doyoung. -->
+이러한 파일 메모리 대응을 사용자 프로세스에 제공하는 시스템 호출 중 대표적인
+것으로 Unix의 `mmap()`이 존재한다. Pintos 문서에 서술된 `mmap()`의 함수 
+원형(prototype)과 Unix `mmap()`의 함수 원형은 조금 다르지만, 파일과 해당 파일에
+대응될 주소를 인자로 받아 해당 파일에 대한 메모리 주소 공간 상의 대응을 
+생성한다는 면에서는 같다. `mmap()`으로 대응을 생성했다면 사용이 끝난 후에 이러한
+대응을 해제해야 한다. `munmap()`은 Unix에서 이러한 기능을 제공하는 시스템 
+호출로, Pintos의 `munmap()`은 핸들을 이용하여 한 번에 해당 핸들이 가리키는
+대응 전체를 해제할 수밖에 없다는 기능상 한계점을 제외하면 크게 다른 점은 없다.
+
+`mmap()`의 함수 원형을 자세히 살펴보면, 파일 설명자(file descriptor) `fd`와
+해당 파일을 대응시킬 시작 주소 `addr`를 받아 해당 대응에 대한 `mappid_t` 형의
+핸들을 반환하는 것을 알 수 있다. 즉, Unix의 `mmap()`이 대응될 파일의 길이를
+지정할 수 있고 페이지 단위로 정렬된 주소를 반환한다는 점과 달리, Pintos의 
+`mmap()`은 반드시 파일 전체를 대응시켜야 하고 대응의 시작 주소는 항상 인자로
+전달된 주소로 고정되며, 대응된 가상 주소 공간의 시작 주소를 반환하기보다는
+해당 대응 전체에 대한 핸들을 반환하는 것을 알 수 있다.
+
+`munmap()`의 함수 원형은 해당 대응을 나타내는 핸들을 받아 해당 대응 전체를 할당
+해제하는 것을 볼 수 있다. `mmap()`이 해당 대응 전체에 대한 핸들을 반환하고
+`munmap()`이 해당 대응 전체를 할당 해제한다는 것은 커널에서 메모리와 파일의
+대응, 그리고 핸들과 실제 페이지에 대한 대응을 어디엔가 저장해야 한다는 뜻이다. 
+따라서, `mmap()`과 `munmap()`을 구현하기 위해서는 이러한 대응을 관리하는 
+자료구조를 구현하거나, SPT에 이러한 핸들을 저장하고 `munmap()` 호출마다 SPT를
+순회하여 핸들에 대응되는 페이지의 목록을 찾아야 한다. 본 구현에서는 후자의 
+접근을 택하였다.
+
 ### Limitations and Necessity
-<!-- TODO: To be filled by Doyoung. -->
+```C
+/* From userprog/syscall.c. */
+static void
+syscall_handler (struct intr_frame *f) 
+{
+  int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
+
+  switch (syscall_number) {
+    case SYS_HALT: halt (); break; 
+    case SYS_EXIT: exit (f->esp); break;   
+    case SYS_EXEC: f->eax = exec (f->esp); break;
+    case SYS_WAIT: f->eax = wait (f->esp); break;
+    case SYS_CREATE: f->eax = create (f->esp); break;
+    case SYS_REMOVE: f->eax = remove (f->esp); break;
+    case SYS_OPEN: f->eax = open (f->esp); break;
+    case SYS_FILESIZE: f->eax = filesize (f->esp); break;
+    case SYS_READ: f->eax = read (f->esp); break;
+    case SYS_WRITE: f->eax = write (f->esp); break;  
+    case SYS_SEEK: seek (f->esp); break;   
+    case SYS_TELL: f->eax = tell (f->esp); break;   
+    case SYS_CLOSE: close (f->esp); break;
+    /* There's no handling routine for mmap() and munmap()! */
+  }
+}
+```
+현재의 Pintos 구현을 살펴보면, `mmap()`과 `munmap()` 시스템 호출을 처리하기 위한
+시스템 호출 핸들러가 구현되어 있지 않으며, 해당 시스템 호출이 발생하였을 시 
+핸들러에 실행 흐름을 넘겨주는 절차도 구현되어 있지 않은 것을 볼 수 있다. 
+
 ### Design Proposal
-<!-- TODO: To be filled by Doyoung. -->
+
+#### `syscall_handler()`
+```C
+/* From userprog/syscall.c. */
+static void
+syscall_handler (struct intr_frame *f) 
+{
+  int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
+
+  switch (syscall_number) {
+    ...
+    case SYS_MMAP: f->eax = mmap (f->esp); break;
+    case SYS_MUNMAP: munmap (f->esp); break;
+  }
+}
+```
+먼저, 해당 시스템 호출을 정상적으로 처리하기 위해서는 해당 시스템 호출에 대한
+핸들러로 실행 흐름을 넘겨주는 루틴을 구현해야 한다.
+
+#### `mmap()` 
+```C
+/* Maybe into userprog/syscall.c. */
+static uint32_t
+mmap (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *addr = (void *) dereference (esp, 2, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if (fp == NULL)
+    return MAPID_ERROR;
+
+  /* 
+    To implement mmap() system call, this function should do followings;
+
+    1. Allocate a mapid by allocate_mapid() call.
+    2. Get the size of file, divide it by the size of a page (4 KiB). Let the
+       quotient be N.
+    3. Add (N + 1) SPTEs into the SPT of current process. 
+      - The SPTE should have the underlying block, sector number, and the
+        size within the page if the size of the file is not aligned with the
+        size of a page. 
+      - The SPTE should also have the mapid for this mapping. 
+    4. Return the mapid allocated in the first step.
+  */
+}
+```
+`mmap()` 시스템 호출에서는 새로운 식별자를 할당받고, 파일의 크기에 따라 필요한
+만큼의 SPTE를 현재 프로세스의 SPT에 추가한다. 만약 파일의 크기가 15 KiB라면,
+총 4개(= 15 / 4 + 1 개)의 SPTE를 SPT에 추가하고, 마지막 SPTE의 `size` 멤버는
+3으로 초기화되어야 할 것이다. 또한, 각각 SPTE는 인자 `fd`가 가리키는 파일 내부의
+블럭에 대한 정보와 해당 블럭 내에서 섹터 번호에 대한 정보를 가지고 있어야 한다.
+이후 만약 대응된 페이지에 접근하는 도중 페이지 폴트가 발생하면, 페이지 폴트 
+핸들러는 `mmap()`에서 추가된 SPTE를 참조해 필요한 페이지를 디스크에서 가져온다. 
+
+`allocate_mapid()`는 각 대응마다 고유한 식별자를 할당하는 함수로, 
+`threads/thread.c`의 `allocate_tid()`나 `filesys/file.c`의 `allocate_fd()`와
+거의 비슷한 기능과 역할을 한다.
+
+#### `munmap()`
+```C
+/* Maybe into userprog/syscall.c. */
+static void
+munmap (void *esp)
+{
+  mapid_t mapid = (mapid) dereference (esp, 1, WORD_SIZE);
+
+  /*
+    To implement munmap() system call, this function should do followings;
+
+    1. Iterate through the SPT of current process, mark all the pages as not
+       present if the page's mapid is same with the mapid to unmap.
+    2. Also, for each pages to be unmapped, write them back to the disk if
+       the page is dirty.
+    3. Remove all of SPTEs whose mapid is to be unmapped, from current process's 
+       SPT. 
+    4. Deallocate all physical frames occupied by the mappings.
+  */
+}
+```
+`munmap()` 시스템 호출을 구현하기 위해서, 커널에서는 먼저 인자로 넘어온 
+`mapid`와 동일한 `mapid` 멤버를 가진 SPTE를 현재 프로세스의 SPT에서 찾는다.
+이후, 이러한 대응을 해제할 SPTE들과 연관된 모든 페이지들의 페이지 테이블 원소의 
+`present` 비트를 0으로 설정해 해당 페이지가 더 이상 유효하지 않음을 나타내고,
+만약 해당 페이지의 `dirty` 비트가 1이라면 해당 페이지를 다시 디스크에 쓴다.
+이후에는 모든 대응이 해제된 페이지들의 SPTE를 SPT에서 삭제하고, 이들에 연관된
+물리적 페이지 프레임 또한 삭제한다.
 
 ## Swap Table
 ### Basic Descriptions and Limitations
