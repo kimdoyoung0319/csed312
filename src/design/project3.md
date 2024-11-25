@@ -402,7 +402,11 @@ palloc_get_page() 를 통해 새로운 페이지를 할당하지만, 만약 용�
 맞게 프레임을 선택하여 방출하는 구현이 필요하게 된다.
 
 ### Necessity and Design Proposal
-<!-- TODO: To be filled by Taeho. -->
+ 우선 Frame Table은 RAM의 상태를 관리해야 한다. 따라서 RAM의 용량을 Frame 단위로 
+나누고 각 프레임에 대해서 현재 할당 여부, 최근에 접근되었는지 여부, 수정되었는지 여부 등을 
+함께 저장하여 관리해야 한다. 프레임 테이블의 핵심은 바로 사용 가능한 프레임을 찾고, 
+만약에 가능한 게 없다면 스왑할 프레임을 골라서 프레임을 할당해주는 것을 효율적으로 수행해야 
+한다. 
 
 ## Supplemental Page Table
 페이지 테이블은 CPU로 하여금 가상 주소를 실제 물리적 주소로 번역하는 데 중요한
@@ -525,7 +529,6 @@ SPT를 새로 구현하고, 이러한 SPT를 페이지 폴트 핸들러가 참�
 교체된 페이지, 혹은 아직 적재되지 않은 페이지를 가지고 있기 때문이다.
 
 ### Design Proposal
-<!-- TODO: Page fault handler modification, modifications on SPTs. -->
 <!-- TODO: Memory-mapping or lazy loading will be discussed on the relevant 
            section. -->
 그렇다면, 이러한 SPT를 구현하기 위한 적절한 자료구조는 무엇일까? SPT는 
@@ -564,16 +567,30 @@ SPT를 새로 구현하고, 이러한 SPT를 페이지 폴트 핸들러가 참�
 /* Maybe into vm/spt.h. */
 struct spte 
   {
-    bool is_swapped;
+    int size;
+    bool swapped;
+    void *uaddr;
+    mapid_t mapid;
     block_sector_t index;
     struct hash_elem elem;
   }
 ```
-`spte` 구조체는 SPTE를 나타내기 위한 구조체이다. `struct spte`는 먼저, 해당 
-SPTE에 대응되는 페이지가 현재 스왑 블록에 존재하는지 혹은 파일 시스템 블록에 
-존재하는지를 나타내기 위한 `is_swapped` 멤버를 가지고 있다. 또, 해당 블록에서
-어떤 섹터에 해당 페이지가 존재하는지를 나타내기 위한 멤버로 `index`를 가지고 
-있으며, 해시 테이블에 해당 구조체를 추가하기 위한 원소로 `elem`을 가지고 있다.
+`spte` 구조체는 SPTE를 나타내기 위한 구조체이다. `struct spte`는 먼저, 해당
+페이지가 4 KiB 공간 내에서 실제로 데이터를 가지고 있는 공간이 얼마인지를 
+나타내기 위한 `size` 멤버를 가지고 있다. 이는 해당 크기를 넘어가는 바이트들을
+불필요하게 블록에서 읽어들이지 않고, 해당 공간을 그냥 0으로 채우기 위해 
+존재한다. 또한, 해당 SPTE에 대응되는 페이지가 현재 스왑 블록에 존재하는지 혹은 
+파일 시스템 블록에 존재하는지를 나타내기 위한 `swapped` 멤버를 가지고 있다. 
+`uaddr`은 해당 SPTE에 연관된 페이지의 사용자 영역 가상 주소이다.
+
+
+또한, 해당 SPTE가 만약 메모리 파일 대응으로 가상 주소 공간에 대응된 파일이라면,
+해당 SPTE와 연관된 대응의 식별자(map identifier)를 저장하기 위한 `mapid` 멤버를
+가지고 있다. 만약 해당 SPTE와 연관된 페이지가 메모리 파일 대응으로 적재되는
+페이지가 아니라면 `mapid`는 `MAPID_ERROR`로 초기화되어 해당 페이지가 메모리
+대응 파일로 대응된 페이지가 아님을 나타낸다. 또, 해당 블록에서 어떤 섹터에 해당 
+페이지가 존재하는지를 나타내기 위한 멤버로 `index`를 가지고 있으며, 해시 
+테이블에 해당 구조체를 추가하기 위한 원소로 `elem`을 가지고 있다.
 
 #### `struct process`
 ```C
@@ -608,10 +625,12 @@ page_fault (struct intr_frame *f)
   /*
     1. Check if current process's SPT has an entry about the faulting page.
     2. If the SPT does not have such SPTE, terminate the malicious user process.
-    3. Else, according to the information in the entry, allocate a physical 
-       frame which the page would be loaded into.
+     3. Else, according to the information in the entry, allocate a physical 
+       frame which the page would be loaded into. This is done with the frame
+       table.
       - If the physical page frame is full, evict a frame by LRU-approximating
         page replacement algorithm.
+      - Also, find the swap slot by the swap table.
       - Then, modify the evicted page's SPTE so that it now holds the block and
         sector where the page is evicted.
     4. Load the faulting page into the frame using block_read().
