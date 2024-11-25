@@ -373,9 +373,11 @@ pagedir_set_dirty(), pagedir_is_accessed(), pagedir_set_accessed()가
 페이지 디렉토리 자체를 삭제하는 함수인 pagedir_destroy() 에서는 각 엔트리를 모조리
 확인하여 모든 페이지 테이블을 해제하고, 그 다음에 종료하게 된다. pagedir_clear_page()
 에서는 유저 페이지를 비활성화 하는 함수로 A 플래그를 해제하고, invalidate_pagedir()
-통해서 변경된 내용을 가진 페이지 디렉토리를 다시 TLB에 업데이트하게 된다.
+통해서 변경된 내용을 가진 페이지 디렉토리를 다시 TLB에 업데이트하게 된다. 이외에도 
+pagedir_set_page() 에서는 새로운 매핑을 추가해주는 함수로 유저 가상 페이지를 
+실제 물리 페이지로 매핑을 페이지 디렉토리에 추가해주고, 이 구성을 업데이트 해주는 과정을 수행한다.
 
- 이 때 중요한 과정은 바로 CPU의 CR3 레지스터에 할당되는 과정을 살펴봐야 한다.
+ 이 때 추가적으로 살펴볼 곳은 바로 CPU의 CR3 레지스터에 할당되는 과정을 살펴봐야 한다.
 우선 CPU에서 가상 주소를 물리 주소로 바꿀 때 사용하는 MMU에서는 TLB를 갖고 있다. TLB는
 최근에 사용된 가상 주소와 물리 주소의 관계를 저장하는 캐시로, TLB를 우선적으로 확인하여 가상
 주소를 변환하게 된다. 따라서 우리가 특정 페이지 디렉토리 엔트리를 비활성화하게 되면,
@@ -406,7 +408,32 @@ palloc_get_page() 를 통해 새로운 페이지를 할당하지만, 만약 용�
 나누고 각 프레임에 대해서 현재 할당 여부, 최근에 접근되었는지 여부, 수정되었는지 여부 등을 
 함께 저장하여 관리해야 한다. 프레임 테이블의 핵심은 바로 사용 가능한 프레임을 찾고, 
 만약에 가능한 게 없다면 스왑할 프레임을 골라서 프레임을 할당해주는 것을 효율적으로 수행해야 
-한다. 
+한다. 따라서 그러한 프레임 테이블을 저장하는 엔트리를 위한 구조체를 정의하였다.
+
+```C
+/* vm/frame.h */
+struct fte
+  {
+  bool swapped; /* swapped or not ? */
+  void *upage; /* user virtual memory space */
+  void *kpage; /* kernel physical memory space */
+  bool pinned; /* pinned or not ? */
+  struct list_elem elem;
+}
+
+/* vm/frame.c */
+struct list ft;
+struct lock ft_lock;
+```
+
+ 위의 frame table은 우선 모든 프로세스에서 공유하는 전역 변수로 선언해야 한다. 
+그 이유는 당연하게도 RAM은 모든 프로세스가 공유하는 자원이므로, 프레임 테이블에 접근해서
+사용 가능한 프레임을 찾을 수 있어야 한다. 따라서 프레임 테이블을 사용하기 전에는 항상
+lock을 얻어서 안전성을 보장해야 한다.
+
+ 프레임 테이블 엔트리를 이루게 될 구조체는 다음과 같이 구성되어 있다. 
+
+pinned 되는 부분을 서술하기 + Lock 서술하기 + 정확한 로직을 서술해야 한다.
 
 ## Supplemental Page Table
 페이지 테이블은 CPU로 하여금 가상 주소를 실제 물리적 주소로 번역하는 데 중요한
@@ -625,7 +652,7 @@ page_fault (struct intr_frame *f)
   /*
     1. Check if current process's SPT has an entry about the faulting page.
     2. If the SPT does not have such SPTE, terminate the malicious user process.
-     3. Else, according to the information in the entry, allocate a physical 
+    3. Else, according to the information in the entry, allocate a physical 
        frame which the page would be loaded into. This is done with the frame
        table.
       - If the physical page frame is full, evict a frame by LRU-approximating
