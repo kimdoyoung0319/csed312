@@ -627,14 +627,213 @@ page_fault (struct intr_frame *f)
 가능한 페이지인지를 검증하고, 만약 접근 가능한 페이지라면 이를 디스크에서 
 적재하는 과정을 구현하여야 한다.
 
-## Lazy Loading
-<!-- TODO: To be filled by Doyoung. -->
-### Basic Descriptions
-<!-- TODO: To be filled by Doyoung. -->
-### Limitations and Necessity
-<!-- TODO: To be filled by Doyoung. -->
+## Lazy Loading and Paging
+현재 Pintos의 실행 파일 적재 과정은 해당 실행 파일 전체를 메모리에 적재하도록 
+되어 있다. 이러한 구현은 간단하지만, 실행 파일의 특정 부분이 불필요한 경우에도
+해당 부분이 메모리에 적재되어 물리적 메모리 공간이 낭비되고 실행 파일이 큰
+경우 프로세스 실행 시 디스크 입출력에 소요되는 시간이 길어지는 단점이 있었다.
+따라서, 이번 프로젝트에서는 실행 파일을 프로세스 실행 시 전부 적재하지 않고
+필요한 부분만을 적재하는 게으른 적재(lazy loading)을 구현하여야 한다.
+
+또한, 페이지를 프레임에 적재할 때, 물리적 프레임 중 비어 있는 공간이 없다면
+현재 프레임을 점유하고 있는 페이지 중 적절한 것을 선택하여 새로운 것으로 
+교체하여야 할 것이다. 만약 특정 페이지가 프레임에서 교체되어 디스크로 
+쫓겨난다면, 나중에 해당 페이지가 필요할 것에 대비해 해당 페이지를 어떻게 다시 
+프레임에 적재할 지에 대한 정보를 SPT에 저장해야 할 것이다. 또한, 페이지가 
+교체되어 디스크로 쫓겨날 때, 항상 해당 페이지의 내용을 디스크에 쓰는 것이 아닌,
+해당 페이지가 수정되었을(dirty) 때에만 해당 페이지의 내용을 디스크에 쓰는 것이
+효율적일 것이다. 마지막으로, 상술한 바와 같이 페이지 폴트 핸들러는 페이지 폴트
+발생시 SPT를 탐색하여 해당 페이지가 디스크에 존재하는지를 확인하고 만약 
+존재한다면 페이지를 다시 메모리에 적재해야 한다. 이러한 일련의 과정을 페이징이라
+칭한다.
+
+### basic descriptions
+실행 파일로부터 새로운 프로세스를 실행할 때, 운영체제에서는 디스크에서 해당 실행
+파일을 메모리로 적재하는 과정을 거치게 된다. 이러한 실행 파일 적재 과정은 
+필수적이지만, 모든 실행 파일을 한 번에 메모리로 적재할 필요는 없다. 즉, 프로세스
+실행 시에는 실행에 필요한 최소한의 물리적 메모리, 즉 프로세스 실행 과정 중
+쓰일 초기 스택만을 할당하고, 이후 필요한 코드는 실행 파일에서 필요할 때마다
+적재하여 사용한다면 물리적 메모리 공간을 절약하고 프로세스의 초기 실행 과정을
+단축할 수 있을 것이다.
+
+이러한 게으른 적재 과정을 위해서는, 만약 실제로 해당 페이지가 필요할 시 이를
+어떤 블록의 몇 번째 섹터에서 가져와야 할 지를 커널이 기억하고 해당 페이지를
+가져올 수 있도록 하는 과정이 필요할 것이다. 이러한 정보는 상술한 SPT에 
+저장되어야 할 것이다. 즉, 게으른 적재를 구현하기 위해서는 프로세스의 초기 실행
+과정에서 해당 실행 파일에 대한 정보를 SPT에 저장하는 과정이 필요하다. 이후
+페이지 폴트가 발생하면 상술한 페이지 폴트 핸들러 의사 코드에 따라 실제 블럭에서
+해당 실행 파일을 적재하는 과정을 거치게 된다.
+
+또한, 페이징을 위해서 상술한 바와 같이 새로운 페이지를 프레임으로 적재할 때
+현재 프레임 테이블을 순회하여 빈 공간을 찾고, 빈 공간이 없다면 적절한 페이지를
+찾아 해당 페이지를 새로운 페이지로 교체하며, 만약 교체 대상이 된 페이지가
+수정되었다면 그 페이지의 내용을 다시 스왑 블록 혹은 파일 시스템 블록에 쓰는
+과정을 거쳐야 한다. 
+
+### limitations and necessity
+게으른 적재와 페이징을 구현하기 전에, 현재 Pintos의 실행 파일 적재 과정을
+살펴보자. 
+
+```C
+/* From userprog/process.c. */
+/* Loads an ELF executable from FILE_NAME into the current thread.
+   Stores the executable's entry point into *EIP
+   and its initial stack pointer into *ESP.
+   Returns true if successful, false otherwise. */
+bool
+load (const char *file_name, void (**eip) (void), void **esp) 
+{
+  /* Read program headers. */
+  file_ofs = ehdr.e_phoff;
+  for (i = 0; i < ehdr.e_phnum; i++) 
+    {
+      struct Elf32_Phdr phdr;
+      ...
+      switch (phdr.p_type) 
+        {
+          ...
+        case PT_LOAD:
+        ...
+              if (!load_segment (file, file_page, (void *) mem_page,
+                                 read_bytes, zero_bytes, writable))
+                goto done;
+        ...
+        }
+    }
+    ...
+}
+```
+`userprog/process.c`의 `load()` 함수를 살펴보면, ELF 헤더의 각 원소를 순회하며
+만약 해당 원소가 적재 가능하다면 `load_segment()` 함수를 호출하여 해당 원소를
+메모리에 적재하는 것을 볼 수 있다. 그렇다면, `load_segment()` 함수에서는 어떻게
+해당 원소를 메모리에 적재할까?
+
+```C
+/* From userprog/process.c. */
+/* Loads a segment starting at offset ofs in file at address
+   upage.  In total, read_bytes + zero_bytes bytes of virtual
+   memory are initialized, as follows:
+
+        - Read_bytes bytes at upage must be read from file
+          starting at offset ofs.
+
+        - Zero_bytes bytes at upage + read_bytes must be zeroed.
+
+   The pages initialized by this function must be writable by the
+   user process if writable is true, read-only otherwise.
+
+   Return true if successful, false if a memory allocation error
+   or disk read error occurs. */
+static bool
+load_segment (struct file *file, off_t ofs, uint8_t *upage,
+              uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+{
+  ...
+  file_seek (file, ofs);
+  while (read_bytes > 0 || zero_bytes > 0) 
+    {
+      /* Calculate how to fill this page.
+         we will read page_read_bytes bytes from file
+         and zero the final page_zero_bytes bytes. */
+      size_t page_read_bytes = read_bytes < pgsize ? read_bytes : pgsize;
+      size_t page_zero_bytes = pgsize - page_read_bytes;
+
+      /* Get a page of memory. */
+      uint8_t *kpage = palloc_get_page (pal_user);
+      if (kpage == null)
+        return false;
+
+      /* Load this page. */
+      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+        {
+          palloc_free_page (kpage);
+          return false; 
+        }
+      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+
+      /* Add the page to the process's address space. */
+      if (!install_page (upage, kpage, writable)) 
+        {
+          palloc_free_page (kpage);
+          return false; 
+        }
+
+      /* Advance. */
+      read_bytes -= page_read_bytes;
+      zero_bytes -= page_zero_bytes;
+      upage += pgsize;
+    }
+  return true;
+}
+```
+`load_segment()` 함수에서는 새로운 페이지를 할당받아 인자 `file`의 내용을 
+`ofs`부터 시작하여 `read_bytes`만큼 읽어들이고, 이후 해당 페이지에 읽어들인
+내용을 쓰는 작업을 반복하는 것을 볼 수 있다. 이때, `install_page()` 호출을 
+이용해 인자로 전달받은 사용자 가상 주소 `upage`에서 새롭게 할당받은 프레임, 혹은
+물리적 주소 `kpage`로의 대응을 현재 프로세스의 페이지 디렉터리에 추가하는 것을 
+볼 수 있다. 이때 중요한 점은 `load_segment()`의 현재 구현에서는 이러한 작업을 
+인자로 넘어온 `read_bytes`와 `zero_bytes`가 0 이상일 때 계속 반복하여 결국 해당 
+실행 파일의 모든 페이지를 읽어들인다는 점이다. 즉, Pintos의 현재 구현은 상술한
+게으른 적재가 구현되어 있지 않고, 실행 파일의 전체 내용을 메모리로 읽어들이고
+있다.
+
+또한, 위에서 `userprog/exception.c`의 페이지 폴트 핸들러를 살펴본 바와 같이, 
+현재 Pintos에서는 페이지 폴트 발생 시 비어 있는 프레임에 새로운 페이지를 
+할당하거나 이미 있는 프레임에 새로운 페이지를 교체하는 작업 없이, 그저 페이지
+폴트를 발생시킨 유저 프로세스를 종료시키는 것을 볼 수 있다. 즉, 현재
+Pintos에서는 페이지 교체 알고리즘이나 페이지 되쓰기(write-back) 작업을 포함하는
+페이징이 구현되지 않았다.
+
 ### Design Proposal
-<!-- TODO: To be filled by Doyoung. -->
+이러한 게으른 적재와 페이징을 구현하기 위해서는, 위에서 서술한 페이지 폴트 
+핸들러의 수정과 함께 프로세스 초기 실행시 호출되는 `load_segment()`의 정의또한
+수정해야 한다. 즉, 현재 `load_segment()`는 프로세스 실행과 동시에 실행 파일을
+전부 적재하도록 되어 있는데, 새로운 `load_segment()`에서는 이들에 대한 정보를
+SPT에만 저장하고, 실제 해당 페이지가 적재되는 것은 해당 실행 파일에서 아직 
+메모리에 적재되지 않은 부분을 참조하는 도중 발생한 페이지 폴트의 핸들러에서
+이루어져야 한다. 이러한 아이디어를 반영한 `load_segment()`의 수정된 버전의
+의사 코드는 다음과 같을 것이다.
+
+```C
+/* From userprog/process.c. */
+static bool
+load_segment (struct file *file, off_t ofs, uint8_t *upage,
+              uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+{
+  ...
+  file_seek (file, ofs);
+  while (read_bytes > 0 || zero_bytes > 0) 
+    {
+      /* Calculate how to fill this page.
+         we will read page_read_bytes bytes from file
+         and zero the final page_zero_bytes bytes. */
+      size_t page_read_bytes = read_bytes < pgsize ? read_bytes : pgsize;
+      size_t page_zero_bytes = pgsize - page_read_bytes;
+
+      /*
+        After calculating the number of bytes to be read and the number of bytes
+        to be filled with zeros, we should do the following.
+
+        1. Gets the sector number of the underlying block of the file.
+        2. Create new SPTE which holds the sector number from the first step.
+        3. Insert the SPTE with the hash key of upage into the SPT of this newly
+           executed process.
+        4. After this step, the executable file will be demand-paged whenever
+           the process trys to executed yet unloaded portion of the executable,
+           by the modified page fault handler discussed above.
+      */
+
+      /* Advance. */
+      read_bytes -= page_read_bytes;
+      zero_bytes -= page_zero_bytes;
+      upage += pgsize;
+    }
+  return true;
+}
+```
+즉, 새로운 버전의 `load_segment()`에서는 실행 파일을 전부 메모리에 적재하지 
+않고, 해당 실행 파일의 사용자 가상 주소에서 해당 실행 파일이 존재하는 섹터 
+번호만을 SPT에 추가한다.
 
 ## Stack Growth
 ### Basic Descriptions & Limitations
@@ -680,13 +879,162 @@ pointer는 syscall.c에서 `syscall_handler()`가 실행될 때 thread에 `f->es
 에 해당하는 주소에 새로운 page를 할당하는 방식으로 구현하고자 한다.
 
 ## File Memory Mapping
-<!-- TODO: To be filled by Doyoung. -->
+사용자 프로세스가 파일을 읽어들일 때, `read()` 시스템 호출을 사용해 해당 파일의
+내용을 미리 확보된 메모리 공간에 한 번에 읽어들일 수도 있지만, 다른 방법으로
+사용자 프로세스의 가상 주소 공간의 일부를 해당 파일에 대응시켜 해당 파일을 
+필요할 때만 물리적 페이지에 읽어들일 수도 있다. 이러한 대응을 이용한 파일 입출력
+방식을 메모리 대응 파일(memory mapped file)이라 칭한다. 메모리 대응 파일은
+일반적인 `read()` 시스템 호출을 이용한 방식과 비교하였을 때, 파일을 읽어들이기
+위한 디스크 입출력이 필요할 때만 이루어진다는 특징이 있다. 만약 읽어들일 파일의
+크기가 작다면 파일을 미리 메모리에 적재하는 `read()`를 이용한 방식이 효과적일
+수 있지만, 용량이 큰 파일을 읽어들일 때는 필요한 부분만을 메모리에 적재하는
+메모리 대응 방식이 효과적일 것이다.
+
 ### Basic Descriptions
-<!-- TODO: To be filled by Doyoung. -->
+이러한 파일 메모리 대응을 사용자 프로세스에 제공하는 시스템 호출 중 대표적인
+것으로 Unix의 `mmap()`이 존재한다. Pintos 문서에 서술된 `mmap()`의 함수 
+원형(prototype)과 Unix `mmap()`의 함수 원형은 조금 다르지만, 파일과 해당 파일에
+대응될 주소를 인자로 받아 해당 파일에 대한 메모리 주소 공간 상의 대응을 
+생성한다는 면에서는 같다. `mmap()`으로 대응을 생성했다면 사용이 끝난 후에 이러한
+대응을 해제해야 한다. `munmap()`은 Unix에서 이러한 기능을 제공하는 시스템 
+호출로, Pintos의 `munmap()`은 핸들을 이용하여 한 번에 해당 핸들이 가리키는
+대응 전체를 해제할 수밖에 없다는 기능상 한계점을 제외하면 크게 다른 점은 없다.
+
+`mmap()`의 함수 원형을 자세히 살펴보면, 파일 설명자(file descriptor) `fd`와
+해당 파일을 대응시킬 시작 주소 `addr`를 받아 해당 대응에 대한 `mappid_t` 형의
+핸들을 반환하는 것을 알 수 있다. 즉, Unix의 `mmap()`이 대응될 파일의 길이를
+지정할 수 있고 페이지 단위로 정렬된 주소를 반환한다는 점과 달리, Pintos의 
+`mmap()`은 반드시 파일 전체를 대응시켜야 하고 대응의 시작 주소는 항상 인자로
+전달된 주소로 고정되며, 대응된 가상 주소 공간의 시작 주소를 반환하기보다는
+해당 대응 전체에 대한 핸들을 반환하는 것을 알 수 있다.
+
+`munmap()`의 함수 원형은 해당 대응을 나타내는 핸들을 받아 해당 대응 전체를 할당
+해제하는 것을 볼 수 있다. `mmap()`이 해당 대응 전체에 대한 핸들을 반환하고
+`munmap()`이 해당 대응 전체를 할당 해제한다는 것은 커널에서 메모리와 파일의
+대응, 그리고 핸들과 실제 페이지에 대한 대응을 어디엔가 저장해야 한다는 뜻이다. 
+따라서, `mmap()`과 `munmap()`을 구현하기 위해서는 이러한 대응을 관리하는 
+자료구조를 구현하거나, SPT에 이러한 핸들을 저장하고 `munmap()` 호출마다 SPT를
+순회하여 핸들에 대응되는 페이지의 목록을 찾아야 한다. 본 구현에서는 후자의 
+접근을 택하였다.
+
 ### Limitations and Necessity
-<!-- TODO: To be filled by Doyoung. -->
+```C
+/* From userprog/syscall.c. */
+static void
+syscall_handler (struct intr_frame *f) 
+{
+  int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
+
+  switch (syscall_number) {
+    case SYS_HALT: halt (); break; 
+    case SYS_EXIT: exit (f->esp); break;   
+    case SYS_EXEC: f->eax = exec (f->esp); break;
+    case SYS_WAIT: f->eax = wait (f->esp); break;
+    case SYS_CREATE: f->eax = create (f->esp); break;
+    case SYS_REMOVE: f->eax = remove (f->esp); break;
+    case SYS_OPEN: f->eax = open (f->esp); break;
+    case SYS_FILESIZE: f->eax = filesize (f->esp); break;
+    case SYS_READ: f->eax = read (f->esp); break;
+    case SYS_WRITE: f->eax = write (f->esp); break;  
+    case SYS_SEEK: seek (f->esp); break;   
+    case SYS_TELL: f->eax = tell (f->esp); break;   
+    case SYS_CLOSE: close (f->esp); break;
+    /* There's no handling routine for mmap() and munmap()! */
+  }
+}
+```
+현재의 Pintos 구현을 살펴보면, `mmap()`과 `munmap()` 시스템 호출을 처리하기 위한
+시스템 호출 핸들러가 구현되어 있지 않으며, 해당 시스템 호출이 발생하였을 시 
+핸들러에 실행 흐름을 넘겨주는 절차도 구현되어 있지 않은 것을 볼 수 있다. 
+
 ### Design Proposal
-<!-- TODO: To be filled by Doyoung. -->
+
+#### `syscall_handler()`
+```C
+/* From userprog/syscall.c. */
+static void
+syscall_handler (struct intr_frame *f) 
+{
+  int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
+
+  switch (syscall_number) {
+    ...
+    case SYS_MMAP: f->eax = mmap (f->esp); break;
+    case SYS_MUNMAP: munmap (f->esp); break;
+  }
+}
+```
+먼저, 해당 시스템 호출을 정상적으로 처리하기 위해서는 해당 시스템 호출에 대한
+핸들러로 실행 흐름을 넘겨주는 루틴을 구현해야 한다.
+
+#### `mmap()` 
+```C
+/* Maybe into userprog/syscall.c. */
+static uint32_t
+mmap (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *addr = (void *) dereference (esp, 2, WORD_SIZE);
+  struct file *fp = retrieve_fp (fd);
+
+  if (fp == NULL)
+    return MAPID_ERROR;
+
+  /* 
+    To implement mmap() system call, this function should do followings;
+
+    1. Allocate a mapid by allocate_mapid() call.
+    2. Get the size of file, divide it by the size of a page (4 KiB). Let the
+       quotient be N.
+    3. Add (N + 1) SPTEs into the SPT of current process. 
+      - The SPTE should have the underlying block, sector number, and the
+        size within the page if the size of the file is not aligned with the
+        size of a page. 
+      - The SPTE should also have the mapid for this mapping. 
+    4. Return the mapid allocated in the first step.
+  */
+}
+```
+`mmap()` 시스템 호출에서는 새로운 식별자를 할당받고, 파일의 크기에 따라 필요한
+만큼의 SPTE를 현재 프로세스의 SPT에 추가한다. 만약 파일의 크기가 15 KiB라면,
+총 4개(= 15 / 4 + 1 개)의 SPTE를 SPT에 추가하고, 마지막 SPTE의 `size` 멤버는
+3으로 초기화되어야 할 것이다. 또한, 각각 SPTE는 인자 `fd`가 가리키는 파일 내부의
+블럭에 대한 정보와 해당 블럭 내에서 섹터 번호에 대한 정보를 가지고 있어야 한다.
+이후 만약 대응된 페이지에 접근하는 도중 페이지 폴트가 발생하면, 페이지 폴트 
+핸들러는 `mmap()`에서 추가된 SPTE를 참조해 필요한 페이지를 디스크에서 가져온다. 
+
+`allocate_mapid()`는 각 대응마다 고유한 식별자를 할당하는 함수로, 
+`threads/thread.c`의 `allocate_tid()`나 `filesys/file.c`의 `allocate_fd()`와
+거의 비슷한 기능과 역할을 한다.
+
+#### `munmap()`
+```C
+/* Maybe into userprog/syscall.c. */
+static void
+munmap (void *esp)
+{
+  mapid_t mapid = (mapid) dereference (esp, 1, WORD_SIZE);
+
+  /*
+    To implement munmap() system call, this function should do followings;
+
+    1. Iterate through the SPT of current process, mark all the pages as not
+       present if the page's mapid is same with the mapid to unmap.
+    2. Also, for each pages to be unmapped, write them back to the disk if
+       the page is dirty.
+    3. Remove all of SPTEs whose mapid is to be unmapped, from current process's 
+       SPT. 
+    4. Deallocate all physical frames occupied by the mappings.
+  */
+}
+```
+`munmap()` 시스템 호출을 구현하기 위해서, 커널에서는 먼저 인자로 넘어온 
+`mapid`와 동일한 `mapid` 멤버를 가진 SPTE를 현재 프로세스의 SPT에서 찾는다.
+이후, 이러한 대응을 해제할 SPTE들과 연관된 모든 페이지들의 페이지 테이블 원소의 
+`present` 비트를 0으로 설정해 해당 페이지가 더 이상 유효하지 않음을 나타내고,
+만약 해당 페이지의 `dirty` 비트가 1이라면 해당 페이지를 다시 디스크에 쓴다.
+이후에는 모든 대응이 해제된 페이지들의 SPTE를 SPT에서 삭제하고, 이들에 연관된
+물리적 페이지 프레임 또한 삭제한다.
 
 ## Swap Table
 ### Basic Descriptions and Limitations
