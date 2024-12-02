@@ -1,7 +1,7 @@
 #include <hash.h>
-#include <block.h>
 #include <lib/user/syscall.h>
 #include <lib/stdbool.h>
+#include "devices/block.h"
 
 /* Supplemental page table element. */
 struct spte 
@@ -21,5 +21,5 @@ struct spte *spt_lookup (void *);
 
 /* Auxiliary functions to be used for hash table. */
 unsigned spt_hash (const struct hash_elem *, void *);
-unsigned spt_less_func (const struct hash_elem *, const struct hash_elem *, 
-                        void *);
+bool spt_less_func (const struct hash_elem *, const struct hash_elem *, 
+                    void *);

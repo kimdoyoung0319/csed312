@@ -243,7 +243,7 @@ make_process (struct process *par, struct thread *t)
   this->waited = false;
   list_init (&this->children);
   list_init (&this->opened);
-  hash_init (&this->spt, spt_hash, spt_less_func);
+  hash_init (&this->spt, spt_hash, spt_less_func, NULL);
   t->process = this;
 
   if (par != NULL)

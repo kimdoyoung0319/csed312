@@ -58,7 +58,7 @@ spt_hash (const struct hash_elem *e, void *aux UNUSED)
 }
 
 /* Less function for SPT. Returns true if A's address precedes B's. */
-unsigned
+bool
 spt_less_func (const struct hash_elem *a_, const struct hash_elem *b_, 
                void *aux UNUSED)
 {
