@@ -371,3 +371,6 @@ close (void *esp)
 
   file_close (fp);
 }
+
+/* TODO : modify -> read(buffer check) & write (buffer check) (can writable ? and check VM entry) */
+/* TODO : add -> add file memory mapping syscall & unmapping syscall */
