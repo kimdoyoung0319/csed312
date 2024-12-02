@@ -2,66 +2,73 @@
 #include "frame.h"
 struct lock ft_lock;
 struct list ft;
-struct list_elem *ft_clock;
+// struct list_elem *ft_clock; -> 추후 swap out (eviction algorithm) 시 구현할 예정
 
 void 
 ft_init(void)
 {
+  list_init (&ft);
   lock_init (&ft_lock);
-  lock_init (&ft);
-  ft_clock = NULL;
+  // ft_clock = NULL; -> TODO : swap out (eviction algorithm)
 }
 
 void *
-ft_get_frame(void *upage, enum palloc_flags flag)
+ft_get_frame(void)
 {
-  ASSERT (upage != NULL);
-
-  void *kpage = NULL;
-
-  // lock_acquire (&ft_lock);
+  void *kaddr = NULL;
+  
+  lock_acquire (&ft_lock);
   struct fte *this = (struct fte *) malloc (sizeof (struct fte));
 
   if (this == NULL)
     return NULL;
 
-  while (kpage == NULL)
+  while (kaddr == NULL)
   {
-    kpage = palloc_get_page (flag);
+    kaddr = palloc_get_page (PAL_USER | PAL_ZERO);
 
-    if (kpage == NULL && !swap_out())
+    if (kaddr == NULL) //여기서 swap out 부분 구현해야 한다
     {
-      free (kpage);
+      free (kaddr);
+      lock_release (&ft_lock);
       return NULL;
     }
   }
   
-  this->kpage = kpage;
+  this->kaddr = kaddr;
   this->process = thread_current ()->process;
-  list_push_back (&ft, &this->elem);
 
-  // lock_release (&ft_lock);
-  return kpage;
+  list_push_back (&ft, &this->elem);
+  lock_release (&ft_lock);
+
+  return kaddr;
 }
 
 void
-ft_free_frame (void *kpage)
+ft_free_frame (void *kaddr)
 {
-  ASSERT (kpage != NULL);
+  lock_acquire (&ft_lock);
 
   struct fte *this;
-  // lock_acquire (&ft_lock);
-
+  struct list_elem *e;
   //list 순회하면서 this 찾아주기
+  for (e = list_begin (&ft); e != list_end (&ft); 
+       e = list_next (e))
+    {
+      this = list_entry (e, struct fte, elem);
 
-  if (this == NULL)
-    sys_exit (-1);
+      if (this->kaddr == kaddr)
+        break;
+    }
+
+  // CHECK : 필요한 부분인지 확인
+  // if (this == NULL)
+  //   sys_exit (-1);
   
   list_remove (&this->elem);
-  palloc_free_page (this->kpage);
-
-  // pagedir_clear_page 를 해줘야 하지 않을까?
-
+  palloc_free_page (this->kaddr);
   free (this);
-  // lock_release (&ft_lock);
+  // CHECK : pagedir_clear_page 
+
+  lock_release (&ft_lock);
 }

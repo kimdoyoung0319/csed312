@@ -22,6 +22,7 @@
 #include "threads/palloc.h"
 #include "threads/pte.h"
 #include "threads/thread.h"
+#include "vm/frame.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #include "userprog/exception.h"
@@ -114,7 +115,7 @@ main (void)
   exception_init ();
   syscall_init ();
 #endif
-
+  ft_init ();
   /* Start thread scheduler and enable interrupts. */
   thread_start ();
   serial_init_queue ();
