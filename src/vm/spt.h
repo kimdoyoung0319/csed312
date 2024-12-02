@@ -6,14 +6,14 @@
 #include <lib/stdbool.h>
 #include "devices/block.h"
 
-/* Supplemental page table element that represents a block that is either 
+/* Supplemental page table element that represents a page that is either 
    swapped out of not loaded. */
 struct spte 
   {
-    size_t size;             /* Total size of this memory block. */
-    bool swapped;            /* Has this set of pages swapped out? */
-    bool writable;           /* Is this set of pages writable? */
-    void *uaddr;             /* The starting address of this block. */
+    size_t size;             /* Total size of this page. */
+    bool swapped;            /* Has this page swapped out? */
+    bool writable;           /* Is this page writable? */
+    void *uaddr;             /* The starting address of this page. */
     mapid_t mapid;           /* Map identifier for memory-mapped files. */
     block_sector_t index;    /* Starting sector's index of this block. */
     struct hash_elem elem;   /* Hash element for SPT. */

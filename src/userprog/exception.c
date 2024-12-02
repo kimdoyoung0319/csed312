@@ -168,37 +168,30 @@ page_fault (struct intr_frame *f)
   if (entry == NULL || !entry->writable && write || !not_present)
     kill (f);
 
-  size_t read_bytes = entry->size;
   block_sector_t read_sector = entry->index;
-  uint8_t *upage = fault_addr;
+  bool writable = entry->writable;
+  uint8_t *upage = pg_round_down (fault_addr);
   enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
   struct block *block_to_read = block_get_role (block_type);
-  bool writable = entry->writable;
 
-  while (read_bytes > 0)
+  size_t page_read_bytes = entry->size;
+  size_t page_zero_bytes = PGSIZE - entry->size;
+
+  uint8_t *kpage = ft_get_frame ();
+
+  /* According to the implementation of ft_get_frame(), the return value 
+     must not be NULL. However, I added this to ensure completeness for 
+     this routine. Delete this if it passes the test set without this 
+     statements. */
+  if (kpage == NULL)
+    kill (f);
+
+  block_read (block_to_read, read_sector, kpage);
+  memset (kpage + page_read_bytes, 0, page_zero_bytes);
+
+  if (!process_install_page (upage, kpage, writable))
     {
-      size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
-      size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
-      uint8_t *kpage = ft_get_frame ();
-
-      /* According to the implementation of ft_get_frame(), the return value 
-         must not be NULL. However, I added this to ensure completeness for 
-         this routine. Delete this if it passes the test set without this 
-         statements. */
-      if (kpage == NULL)
-        kill (f);
-
-      block_read (block_to_read, read_sector, kpage);
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      if (!process_install_page (upage, kpage, writable))
-        {
-          ft_free_frame (kpage);
-          kill (f);
-        }
-      
-      read_bytes -= page_read_bytes;
-      upage += PGSIZE;
+      ft_free_frame (kpage);
+      kill (f);
     }
 }
