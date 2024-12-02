@@ -2,19 +2,476 @@
 이번 Project 3에서는 다음의 7가지 요구사항을 만족하여야 한다.
 
 ## Frame Table
-<!-- 
-  Requirement 문서에서 각 테이블이 각 스레드에 한정되어 지역적으로 선언되어야
-  하는지 혹은 전역적으로, 모든 스레드가 공유하도록 선언해야 하는지를 결정해야
-  한다고 합니다. 프레임 테이블이나 스왑 테이블 부분 서술하실 때 이 부분
-  염두해 주세요.
--->
-<!-- 추가로 여기서 page pinned 도 설명해야 한다. -->
-### Basic Descriptions
-<!-- TODO: To be filled by Taeho. -->
-### Limitations and Necessity
-<!-- TODO: To be filled by Taeho. -->
-### Design Proposal
-<!-- TODO: To be filled by Taeho. -->
+ Frame Table에 대해서 알아보기 전에, pintos에서 어떻게 VM을 구현하고 있는지, 
+혹은 virtual address가 어떻게 정의되어 있는지를 확인해야 할 것이다.
+
+#### Pages
+ page (혹은 virtual page)는 virtual memory 상에 놓여져 있는 연속적인 공간으로 
+pintos 에서는 4 KB 의 용량을 갖고 있다. 또한, 각 page에 접근하기 위해서는 virtual
+address를 사용하게 된다. 이 virtual address는 항상 page size에 나눠질 수 있게 
+4 KB 단위로 정렬되어야 하며, 현재 pintos 에서는 하단과 같이 virtual 
+address를 이루는 32 bit가 구성되어 있다. 앞의 20 bit는 page 를 나타내는 page 
+number로 사용되며, 뒤의 12 bit는 offset으로 사용되고 있다. 앞선 20 bit 를 통해 
+원하는 page에 접근하고, 위의 12 bit를 통해서 page 내의 특정 위치를 알 수 있다.
+실제로 데이터에 접근하기 위해서는 이 virtual address를 physical address로 변환하여 
+실제 데이터에 접근해야 한다.
+
+```
+31                12 11         0
++-------------------+-----------+
+|    Page Number    |   Offset  |
++-------------------+-----------+
+```
+
+ 각 프로세스가 가지는 virtual memory space는 크게 두 가지 종류로 구분할 수 있다.
+각각 user를 위한 user page와 kernel page 로 나뉘고, 이 때 둘을 나누는 기준은 
+PHYS_BASE를 기준으로 더 낮은 주소에 위치한 address면 보통 user page를 나타내는 
+경우이며, 더 높은 주소를 가지는 경우 kernel page 속의 데이터를 나타낸다고 볼 수 있다. 
+이제 알아볼 것은 이러한 page가 실제 메모리 상에서 어떻게 표현되고 있으며, 어떻게 저장되고 
+있는지를 이해해야 한다.
+
+#### Frame
+ 실제 physical memory 에 저장된 데이터는 page와 유사한 frame 단위로 저장된다.
+frame 도 마찬가지로 virtual page와 같은 size인 4 KB의 크기를 갖다. 또한,
+마찬가지로 page-aligned 되어 있다. virtual page와 마찬가지로 접근하기 위해서 사용할
+주소는 physical address라고 불리며 virtual address와 유사한 구조를 갖고 있다.
+하단에 있는 것처럼 앞선 20 bit로 frame의 번호를 지칭하며, 나머지 bit로 해당 프레임 
+내부의 주소를 지정하게 된다.
+
+```
+31               12 11        0
++-------------------+-----------+
+|    Frame Number   |   Offset  |
++-------------------+-----------+
+```
+
+ 현재 pintos에서는 physical address로는 직접 physical memeory에서 데이터를 
+읽어오는 방법 자체가 구현되어 있지 않다. pintos 에서는 virtual memory space를 
+기준으로 프로세스가 직접적으로 physical memory에 접근하는 것이 아닌, 간접적으로 
+접근할 수 있도록 작동하게 된다. 그렇다면 현재는 이러한 과정이 어떤 방식으로 구현되어 
+있을까? 실제 코드를 분석하며 알아보도록 하자.
+
+### virtual address
+```C
+/* threads/vaddr.h */
+/* Base address of the 1:1 physical-to-virtual mapping.  Physical
+   memory is mapped starting at this virtual address.  Thus,
+   physical address 0 is accessible at PHYS_BASE, physical
+   address address 0x1234 at (uint8_t *) PHYS_BASE + 0x1234, and
+   so on.
+
+   This address also marks the end of user programs' address
+   space.  Up to this point in memory, user programs are allowed
+   to map whatever they like.  At this point and above, the
+   virtual address space belongs to the kernel. */
+/* Page offset (bits 0:12). */
+#define PGSHIFT 0                      /* Index of first offset bit. */
+#define PGBITS  12                       /* Number of offset bits. */
+#define PGSIZE  (1 << PGBITS)            /* Bytes in a page. */
+#define PGMASK  BITMASK(PGSHIFT, PGBITS) /* Page offset bits (0:12). */
+/* Returns true if VADDR is a user virtual address. */
+static inline bool is_user_vaddr (const void *vaddr) 
+/* Returns true if VADDR is a kernel virtual address. */
+static inline bool is_kernel_vaddr (const void *vaddr) 
+/* Returns kernel virtual address at which physical address PADDR
+   is mapped. */
+static inline void * ptov (uintptr_t paddr)
+/* Returns physical address at which kernel virtual address VADDR
+   is mapped. */
+static inline uintptr_t vtop (const void *vaddr)
+```
+ 해당 함수들은 virtual address가 어떻게 사용되고 있는지를 알 수 있다. 위에서 설명한 
+것처럼 virtual address가 PHYS_BASE를 기준으로 더 높은 주소라면 kernel vritual 
+memory에 해당하며, 이 주소들은 모두 1대 1로 physical memory와 대응되도록 구현되어
+있다. 따라서 `ptov()`, `vtop()` 에서 알 수 있는 것처럼 physical address를 가상으로 
+변환하려면 PHYS_BASE만 더해주면 되고, 반대로 `vtop()` 인 경우에는 빼주기만 하면 된다. 
+이제 Kernel virtual memory 가 어떻게 실제 메모리와 대응되는지는 알았다. 그렇다면
+user가 사용할 수 있는 공간인 0 ~ PHYS_BASE (3 GB)의 영역은 어떻게 대응되는 것이며, 
+어떻게 구현되어 있을지에 대해서 알아보고자 한다.
+
+ 우선 1 대 1로 대응되어 있지 않으므로, 현재 사용자의 가상 메모리 영역이 어떻게 실제 
+물리 메모리에 대응되어 있는지를 알기 위해서는 그러한 정보를 누군가는 저장하고 있어야 한다.
+그 역할을 수행하는 것이 바로 페이지 테이블이다. 하지만 만약 모든 가상 페이지에 해당하는 
+실제 메모리 주소를 저장하기 위해서는 2^20개의 엔트리를 가진 페이지 테이블이 필요하게
+되고, 이러한 페이지 테이블은 각 프로세스마다 필요하므로 엄청나게 큰 용량을 차지하게 된다.
+따라서 x86에서는 두 개의 계층을 이룬 구조를 선택하였고, 한 개의 페이지 테이블이 저장하는
+원소의 숫자를 2^10개로 제한하였다. 대신 상위 구조인 페이지 디렉토리를 따로 선언하여 
+사용하게 되는데, 각 페이지 디렉토리가 2^10개의 페이지 테이블을 저장하게 된다.
+따라서 하나의 페이지 디렉토리가 하나의 프로세스에서 현재 가상 주소로 총 할당될 수 있는 
+4 GB 의 영역을 담당하게 된다. 따라서 페이지 디렉토리에 접근하기 위해서는 가상 주소가
+실제로는 하단과 같이 할당되어 있다. 따라서 앞선 10 bit를 통해 페이지 디렉토리 안에서
+어떠한 페이지 테이블을 참조할 것인지 알 수 있으며, 그 다음 10 bit를 통해서 해당 페이지
+테이블 내의 인덱스를 참조하여 실제 물리 프레임의 주소를 변환할 수 있게 된다. 이제
+실제로 핀토스에서 이러한 페이지 테이블, 디렉토리, 그리고 각 엔트리들이 어떻게 구현되어
+있는지 간단히 알아보자.
+```
+ 31                  22 21                  12 11                   0
++----------------------+----------------------+----------------------+
+| Page Directory Index |   Page Table Index   |    Page Offset       |
++----------------------+----------------------+----------------------+ 
+
+31                                     12 11 9      6 5     2 1 0
++---------------------------------------+----+----+-+-+---+-+-+-+
+|           Physical Address            | AVL|    |D|A|   |U|W|P|
++---------------------------------------+----+----+-+-+---+-+-+-+
+```
+ 
+#### page allocation
+```C
+/* Page allocator.  Hands out memory in page-size (or
+   page-multiple) chunks.  See malloc.h for an allocator that
+   hands out smaller chunks.
+
+   System memory is divided into two "pools" called the kernel
+   and user pools.  The user pool is for user (virtual) memory
+   pages, the kernel pool for everything else.  The idea here is
+   that the kernel needs to have memory for its own operations
+   even if user processes are swapping like mad.
+
+   By default, half of system RAM is given to the kernel pool and
+   half to the user pool.  That should be huge overkill for the
+   kernel pool, but that's just fine for demonstration purposes. */
+
+/* A memory pool. */
+struct pool
+  {
+    struct lock lock;                   /* Mutual exclusion. */
+    struct bitmap *used_map;            /* Bitmap of free pages. */
+    uint8_t *base;                      /* Base of pool. */
+  };
+
+/* Two pools: one for kernel data, one for user pages. */
+static struct pool kernel_pool, user_pool;
+
+/* Initializes the page allocator.  At most USER_PAGE_LIMIT
+   pages are put into the user pool. */
+void palloc_init (size_t user_page_limit)
+
+/* Obtains and returns a group of PAGE_CNT contiguous free pages.
+   If PAL_USER is set, the pages are obtained from the user pool,
+   otherwise from the kernel pool.  If PAL_ZERO is set in FLAGS,
+   then the pages are filled with zeros.  If too few pages are
+   available, returns a null pointer, unless PAL_ASSERT is set in
+   FLAGS, in which case the kernel panics. */
+void * palloc_get_multiple (enum palloc_flags flags, size_t page_cnt)
+void * palloc_get_page (enum palloc_flags flags) 
+
+/* Frees the PAGE_CNT pages starting at PAGES. */
+void palloc_free_multiple (void *pages, size_t page_cnt) 
+void palloc_free_page (void *page) 
+
+/* Initializes pool P as starting at START and ending at END,
+   naming it NAME for debugging purposes. */
+static void init_pool (struct pool *p, void *base, size_t page_cnt, const char *name) 
+/* Returns true if PAGE was allocated from POOL,
+   false otherwise. */
+static bool page_from_pool (const struct pool *pool, void *page) 
+```
+ 핀토스 상에서 각 페이지를 실제 메모리인 램에 어떻게 데이터를 저장하고, 관리하는지에 대해
+저장하고 있는 page allocator 부분을 확인해보도록 하자. 시스템 메모리는 크게 두 개의
+풀로 구별되는데, 크게 유저 풀과 커널 풀로 구별된다. 각 풀은 램을 정확히 반으로 나눠서 
+4 KB인 페이지의 용량에 맞게 나눠가지게 된다. 각 풀은 연산이 문제 없이 실행되기 위한
+락과 사용 여부를 나타내기 위한 비트맵, 그리고 시작 주소로 이뤄져 있다. 이렇게 두 개로 
+구별된 이유는 사용자 프로세스가 계속해서 swap이 발생하더라도, 커널 메모리에서는 영향을 받지
+않고 계속해서 안정적으로 수행할 수 있도록 하기 위해 두 개의 풀로 나눠서 구성되어 있다. 
+이렇게 나뉘어진 풀을 기반으로 `palloc_init()` 에서는 입력받은 제한만큼 유저 풀의 개수를
+제한을 두지만 기본적으로는 절반으로 나뉘어져서 유저 풀과 커널 풀을 초기화하게 된다.
+그 다음으로 사용되는 것은 바로 `palloc_get_multiple()` 이다. 해당 함수에서는 입력받은
+flag를 기준으로 PAL_USER가 설정된 경우 유저 풀(아닌 경우 커널 풀)에서 page_cnt 
+만큼의 페이지를 풀에서 할당하게 된다. PAL_ZERO 플래그가 설정된 경우 페이지를 0으로 초기화
+하며, 마지막으로 PAL_ASSERT가 설정된 경우 연속된 페이지를 할당할 메모리가 부족하면
+커널 패닉을 일으키게 되지만, 설정되지 않은 경우에는 null 포인터를 반환하게 된다. 다음으로
+`palloc_free_multiple()` 에서는 입력받은 pages 부터 page_cnt 개수만큼의 페이지의
+할당을 해제하는데, 각 페이지별로 어떤 풀에서 할당된 것인지 확인하고 각 풀 내부의 비트맵에
+사용 여부를 false로 변환하고, 페이지의 사용 여부를 확인한 뒤에 사용을 해제하게 된다.
+마지막 `page_from_pool()` 의 경우에는 입력받은 풀에서 입력받은 페이지가 풀 내에 
+존재하는지 여부를 반환한다. 여기서 중요하개 확인할 수 있는 부분은, 유저 메모리가 단순히 
+별개로 할당되는 것이 아닌 커널 메모리가 매핑되어 있는 물리 메모리를 1 대 1 로 나눠서 
+풀을 할당하는 방식으로 이뤄져 있다는 것이다. 즉, PHYS_BASE 이상의 영역은 유저와 커널이
+함께 공유하여 사용하게 될 영역이 될 것이다.
+
+#### Page Table Entry
+```C
+/* From threads/pte.h */
+/* Page table index (bits 12:21). */
+#define	PTSHIFT PGBITS		         /* First page table bit. */
+#define PTBITS  10                    /* Number of page table bits. */
+#define PTSPAN  (1 << PTBITS << PGBITS)//Bytes covered by a page table 
+#define PTMASK  BITMASK(PTSHIFT, PTBITS) /* Page table bits (12:21). */
+
+/* Page directory index (bits 22:31). */
+#define PDSHIFT (PTSHIFT + PTBITS)   /* First page directory bit. */
+#define PDBITS  10                   /* Number of page dir bits. */
+#define PDMASK  BITMASK(PDSHIFT, PDBITS)// Page directory bits (22:31)
+
+/* Obtains page table index from a virtual address. */
+static inline unsigned pt_no (const void *va)
+/* Obtains page directory index from a virtual address. */
+static inline uintptr_t pd_no (const void *va)
+
+#define PTE_FLAGS 0x00000fff    /* Flag bits. */
+#define PTE_ADDR  0xfffff000    /* Address bits. */
+#define PTE_AVL   0x00000e00    /* Bits available for OS use. */
+#define PTE_P 0x1               /* 1=present, 0=not present. */
+#define PTE_W 0x2               /* 1=read/write, 0=read-only. */
+#define PTE_U 0x4               /* 1=user/kernel, 0=kernel only. */
+#define PTE_A 0x20              /* 1=accessed, 0=not acccessed. */
+#define PTE_D 0x40              /* 1=dirty, 0=not dirty (PTEs only). */
+
+/* Returns a PDE that points to page table PT. */
+static inline uint32_t pde_create (uint32_t *pt)
+/* Returns a pointer to the page table that page directory entry
+   PDE, which must "present", points to. */
+static inline uint32_t *pde_get_pt (uint32_t pde)
+
+/* Returns a PTE that points to PAGE.
+   The PTE's page is readable.
+   If WRITABLE is true then it will be writable as well.
+   The page will be usable only by ring 0 code (the kernel). */
+static inline uint32_t pte_create_kernel (void *page, bool writable)
+
+/* Returns a PTE that points to PAGE.
+   The PTE's page is readable.
+   If WRITABLE is true then it will be writable as well.
+   The page will be usable by both user and kernel code. */
+static inline uint32_t pte_create_user (void *page, bool writable)
+
+/* Returns a pointer to the page that page table entry PTE points
+   to. */
+static inline void *pte_get_page (uint32_t pte)
+```
+ 이제 알아볼 것은 핀토스 상에서 각 페이지 테이블(디렉토리)의 엔트리가 어떻게 이뤄져 있는지 
+여부이다. 우선 처음 정의된 매크로들은 각각 페이지 테이블과 페이지 디렉토리가 가상 주소 
+상에서 어떤 비트로 매핑되어있는지 표현하고 있다. 위에서 설명한 것처럼 10 / 10 / 10 으로 
+나뉘어진 부분을 정의하고 있다. `pt_no()`는 가상 주소 상에서 페이지 테이블 인덱스를 
+반환하며, `pd_no()` 는 페이지 디렉토리 인덱스를 반환하고 있다. 현재 코드에서 구현되어 있는 
+방식은 페이지 테이블에 해당하는 입력을 받으면, 그 테이블의 주소를 저장하기 위한 페이지 
+디렉토리 엔트리를 생성하는 `pde_create()` 와 현재 입력받은 페이지 디렉토리 엔트리를 
+바탕으로 페이지 테이블의 주소를 반환하는 `pde_get_pt()` 로 이뤄져 있다. 또한, 페이지 
+디렉토리 엔트리에서는 위에서 정의된 메크로를 바탕으로 각 페이지 테이블에 접근 시 확인할 
+플래그와 함께 저장되어 있다. 따라서 하단에 제시된 그림과 같이 상위 20개 bit가 페이지 
+테이블의 주소를 이루고 있으며, 하단의 12 비트가 플래그를 저장하게 된다. 이 구조는 
+마찬가지로 페이지 테이블 엔트리에서도 동일하게 사용하고 있다. 다음으로 구현된 부분은 
+`pte_create_kernel()`과 `pte_create_user()`로 함수의 이름에서 알 수 있는 것처럼 
+page와 writable을 입력받아 페이지에 해당하는 페이지 테이블 엔트리를 생성하고 각각 
+커널인지 여부와 유저인지 여부에 맞춰 생성하게 된다. 또한, 입력받은 페이지 테이블 엔트리를 
+바탕으로 다시 페이지의 가상 주소를 반환하는 `pte_get_page()`가 구현되어 있다. 또한, 
+생성 시에 각각 풀에서 lock을 취득하여 원자성을 보장하게 된다. 이렇게 페이지 테이블 
+엔트리가 구현된 것을 확인할 수 있지만, 하지만 이 코드 상에서는 페이지 테이블이나 
+디렉토리를 직접 생성하여 관리하지 않고 있다. 따라서 마지막으로 알아보고자 하는 코드는 
+pagedir.c 에서 실제 어떻게 페이지 디렉토리가 운영되고 있는지를 확인해보도록 하자.
+
+```
+31                                 12 11                     0
++------------------------------------+------------------------+
+|         Physical Address           |         Flags          |
++------------------------------------+------------------------+
+```
+
+ 추가적으로 플래그는 AVL(운영체제에서 사용할 수 있는 비트), P(존재 여부), W(쓸 수 
+있는지 여부), U(유저 접근 여부), A(최근 에 사용되었는지 여부), D(데이터가 수정되었는지 
+여부) 를 각각 저장하게 된다.
+
+#### Page Directory Table
+```C
+/* From userprog/pagedir.c */
+/* Creates a new page directory that has mappings for kernel
+   virtual addresses, but none for user virtual addresses.
+   Returns the new page directory, or a null pointer if memory
+   allocation fails. */
+uint32_t * pagedir_create (void) 
+
+/* Destroys page directory PD, freeing all the pages it
+   references. */
+void pagedir_destroy (uint32_t *pd) 
+
+/* Returns the address of the page table entry for virtual
+   address VADDR in page directory PD.
+   If PD does not have a page table for VADDR, behavior depends
+   on CREATE.  If CREATE is true, then a new page table is
+   created and a pointer into it is returned.  Otherwise, a null
+   pointer is returned. */
+static uint32_t *
+lookup_page (uint32_t *pd, const void *vaddr, bool create)
+
+/* Adds a mapping in page directory PD from user virtual page
+   UPAGE to the physical frame identified by kernel virtual
+   address KPAGE.
+   UPAGE must not already be mapped.
+   KPAGE should probably be a page obtained from the user pool
+   with palloc_get_page().
+   If WRITABLE is true, the new page is read/write;
+   otherwise it is read-only.
+   Returns true if successful, false if memory allocation
+   failed. */
+bool pagedir_set_page 
+(uint32_t *pd, void *upage, void *kpage, bool writable)
+
+/* Looks up the physical address that corresponds to user virtual
+   address UADDR in PD.  Returns the kernel virtual address
+   corresponding to that physical address, or a null pointer if
+   UADDR is unmapped. */
+void * pagedir_get_page (uint32_t *pd, const void *uaddr) 
+
+/* Marks user virtual page UPAGE "not present" in page
+   directory PD.  Later accesses to the page will fault.  Other
+   bits in the page table entry are preserved.
+   UPAGE need not be mapped. */
+void pagedir_clear_page (uint32_t *pd, void *upage) 
+
+/* Returns true if the PTE for virtual page VPAGE in PD is dirty,
+   that is, if the page has been modified since the PTE was
+   installed.
+   Returns false if PD contains no PTE for VPAGE. */
+bool pagedir_is_dirty (uint32_t *pd, const void *vpage) 
+void pagedir_set_dirty (uint32_t *pd, const void *vpage, bool dirty) 
+
+/* Returns true if the PTE for virtual page VPAGE in PD has been
+   accessed recently, that is, between the time the PTE was
+   installed and the last time it was cleared.  Returns false if
+   PD contains no PTE for VPAGE. */
+bool pagedir_is_accessed (uint32_t *pd, const void *vpage) 
+void pagedir_set_accessed (uint32_t *pd, const void *vpage, bool accessed) 
+
+/* Loads page directory PD into the CPU's page directory base
+   register. */
+void pagedir_activate (uint32_t *pd) 
+
+/* Returns the currently active page directory. */
+static uint32_t * active_pd (void) 
+
+/* Some page table changes can cause the CPU's translation
+   lookaside buffer (TLB) to become out-of-sync with the page
+   table.  When this happens, we have to "invalidate" the TLB by
+   re-activating it.
+
+   This function invalidates the TLB if PD is the active page
+   directory.  (If PD is not active then its entries are not in
+   the TLB, so there is no need to invalidate anything.) */
+static void invalidate_pagedir (uint32_t *pd) 
+```
+ 페이지 디렉토리를 생각해보면 페이지 디렉토리 엔트리는 각각 32 bit (4 B)로 구성되어 
+있고, 약 2^10개의 엔트리가 필요하므로, 총 4 KB 의 용량이 필요하다. 즉, 핀토스에서 
+사용하는 페이지 크기와 동일하므로 페이지 디렉토리를 만드는 `pagedir_create()` 를 통해  
+프로세스에서 사용할 페이지 디렉토리를 생성하게 된다. 따라서 palloc_get_page(0) 을 통해
+한 개의 페이지를 RAM 에서 할당하며 이 영역에 페이지 디렉토리가 저장되며, 커널이 가진 
+정보로 설정하기 위해 init_page_dir의 내용을 디렉토리로 초기에 설정하게 된다. 
+그러한 이유는 커널 가상 공간이 PHYS_BASE 이상의 영역으로 대응되어 있으므로 모든 
+프로세스에서 해당 부분에 대해서는 동일한 공간을 공유하게 된다. 따라서 동일하게 설정해준다.
+
+ 특정 가상 주소의 데이터를 읽기 위해서는 우선 페이지 디렉토리에서 대응되는 페이지 테이블을 
+찾아서 페이지 테이블에서 실제 물리 메모리의 프레임 주소를 찾아 거기서 데이터를 읽는다.
+따라서 페이지 디렉토리에서 입력받은 vaddr에 대응되는 페이지 테이블 엔트리를 반환하는 함수인
+`lookup_page()` 가 구현되어 있다. 이 함수에서는 우선 페이지 디렉토리 엔트리를 계산하여
+페이지 테이블이 없는 경우에는 새로운 페이지 테이블을 생성(플래그가 설정된 경우)하여 테이블 
+내에서 페이지 테이블 엔트리(가상 주소)를 반환하게 된다. 이렇게 물리 메모리에 대응되는
+페이지를 찾을 수 있고, 그러한 페이지를 관리하기 위한 함수들로, `pagedir_is_dirty()`,
+`pagedir_set_dirty()`, `pagedir_is_accessed()`, `pagedir_set_accessed()`가 
+있다. 각각 수정 여부를 반환/설정 하고, 최근에 접근되었는지 여부를 확인/설정 한다. 반대로 
+페이지 디렉토리 자체를 삭제하는 함수인 `pagedir_destroy()` 에서는 각 엔트리를 모조리
+확인하여 모든 페이지 테이블을 해제하고, 그 다음에 종료하게 된다. `pagedir_clear_page()`
+에서는 유저 페이지를 비활성화 하는 함수로 A 플래그를 해제하고, `invalidate_pagedir()`
+통해서 변경된 내용을 가진 페이지 디렉토리를 다시 TLB에 업데이트하게 된다. 이외에도 
+`pagedir_set_page()` 에서는 새로운 매핑을 추가해주는 함수로 유저 가상 페이지를 
+실제 물리 페이지로 매핑을 페이지 디렉토리에 추가해주고, 업데이트 해주는 과정을 수행한다.
+
+ 이 때 추가적으로 살펴볼 곳은 바로 CPU의 CR3 레지스터에 할당되는 과정을 살펴봐야 한다.
+우선 CPU에서 가상 주소를 물리 주소로 바꿀 때 사용하는 MMU에서는 TLB를 갖고 있다. TLB는
+최근에 사용된 가상 주소와 물리 주소의 관계를 저장하는 캐시로, TLB를 우선 확인하여 가상
+주소를 변환하게 된다. 따라서 우리가 특정 페이지 디렉토리 엔트리를 비활성화하게 되면,
+현재 CPU의 TLB에 저장된 페이지 디렉토리와 차이가 발생하게 된다. 따라서 이를 방지하기 위해
+다시 업데이트 해주는 과정이 필요하게 되므로 `pagedir_set_accessed()` 에서는 
+`invalidate_pagedir()` 를 통해 TLB에 최신 정보로 업데이트 해준다고 이해할 수 있다.
+`pagedir_activate()` 함수에서 수행하는 어셈블리 루틴에서 확인할 수 있는 것처럼 CPU의
+CR3 레지스터가 저장하고 있는 페이지 디렉토리 정보를 해당 함수에서 다시 업데이트하게 된다.
+
+### Basic Descriptions and Limitations
+ 위의 분석을 통해 알아볼 수 있었던 것처럼 현재 메모리 (RAM) 을 사용하기 위해서는 
+page allocate 부분을 활용하여 페이지 단위로 영역을 할당해서 사용하게 된다. 페이지
+얼로케이터 내에서는 풀을 바탕으로 각 풀에서 할당할 수 있는 연속된 영역에 맞춰서 할당하는
+방식으로만 구현이 되어있는데, 이 때 남아있는 물리 메모리만으로는 여러 프로세스가 실행하는
+큰 메모리가 사용되는 프로그램을 실행할 수 없다. 따라서 사용하지 않는 데이터를 디스크로 옮겨
+데이터를 저장하는 방식으로 더 큰 용량을 지원해야 한다. 하지만 현재 구현에서는 
+`palloc_get_page()` 를 통해 새로운 페이지를 할당하지만, 만약 용량이 부족하다면, 
+새로운 프레임을 할당하지 못하고 문제를 발생하게 된다. 따라서 이번 구현에서는 
+새로운 프레임 테이블을 선언하여 실제 물리 메모리 상에 할당된 프레임들을 관리해야 하고,
+자주 사용하지 않는 프레임이 있다면 디스크로 swap out 해야 하고, 사용해야 할 프레임이 
+있지만 메모리에 없다면 `page_fault()` 가 발생하여 swap in 을 통해 메모리로 해당
+프레임을 불러와야 한다. 이 때 새로운 프레임을 할당하지 못하는 경우에는 기존에 있던 
+프레임 중에 방출(eviction) 될 프레임을 선정하는 알고리즘을 선언하고, 해당 알고리즘에 
+맞게 프레임을 선택하여 방출하는 구현이 필요하게 된다.
+
+### Necessity and Design Proposal
+ 우선 Frame Table은 RAM의 상태를 관리해야 한다. 따라서 RAM의 용량을 Frame 단위로 
+나누고 각 프레임에 대해서 현재 할당 여부, 최근에 접근되었는지 여부, 수정되었는지 여부 등을 
+함께 저장하여 관리해야 한다. 프레임 테이블의 핵심은 바로 사용 가능한 프레임을 찾고, 
+만약에 가능한 게 없다면 스왑할 프레임을 골라서 프레임을 할당해주는 것을 효율적으로 수행해야 
+한다. 따라서 그러한 프레임 테이블을 저장하는 엔트리를 위한 구조체를 정의하였다.
+
+ 또한, 프레임 테이블은 우선 모든 프로세스에서 공유하는 전역 변수로 선언해야 한다. 
+그 이유는 당연하게도 RAM은 모든 프로세스가 공유하는 자원이므로, 프레임 테이블에 접근해서
+사용 가능한 프레임을 찾을 수 있어야 한다. 따라서 프레임 테이블을 사용하기 전에는 항상
+lock을 얻어서 안전성을 보장해야 한다. 
+
+```C
+/* From vm/frame.h */
+struct fte
+  {
+    void *upage; /* user virtual memory address */
+    void *kpage; /* kernel frame memory address */
+    struct process *process; /* which process current frame in ? */
+    bool pinning; /* pinned or not ? */
+    struct list_elem elem;
+  }
+
+/* From vm/frame.c */
+struct list ft;
+struct lock ft_lock;
+```
+
+ 선언할 구조체를 보면 우선 저장할 유저 가상 페이지의 주소를 담고 있는 upage와
+커널이 저장하고 있을 kpage를 선언하였다. kpage는 palloc_get_page(PAL_USER)로
+할당되는 방식으로 구현할 예정이며, 공식 문저에 나와있는 것처럼 유저 풀에서만 프레임을
+할당해야 한다. 또한, 어떤 유저 프로세스에서 해당 프레임이 할당되었는지 확인해야, 
+이후 페이지 폴트 혹은 다양한 이슈 발생 시 확인할 수 있으므로 프로세스를 저장하고자 한다.
+추가적으로 고정된 페이지가 있다면 해당 페이지는 swap out 되지 않도록 할당해야 하므로,
+고정 여부를 저장하고, list 에 넣을 수 있도록 elem을 선언하였다.
+
+
+ 이 구조체를 기반으로 전체 프레임 테이블을 저장할 전역 변수는 ft이고, 해당 ft에 
+접근하기 위해서는 ft_lock을 통해 접근이 이뤄지게 된다. 우선 ft는 init.c 에서 
+`main()` 이 실행되며 핀토스가 구성될 때 함께 초기화가 이뤄져서 준비되어야 한다.
+이후 유저 프로세스가 실행되었을 때 유저 프로세스를 위해서 새로운 프레임을 할당하는 과정에서
+우선 락을 획득하고, 기존에 구현된 palloc_get_page(PAL_USER) 를 통해서 
+유저 풀 내에서 새로운 프레임을 할당해야 한다. 하지만, 이 때 이 과정 중에서 비어있는 
+프레임이 없는 경우 방출을 통해서 새로운 공간을 할당해야 한다. 이렇게 비어있는 공간을
+만들었다면, fte를 선언하고 프레임 테이블에 추가해준다. 이 과정은 모두 lock 으로 
+보호되어야 한다. 또한, 해제하는 과정도 마찬가지로 유사하다. lock 을 얻은 뒤에
+`palloc_free_page()` 를 통해 kpage를 할당을 해제하고, `pagedir_clear_page()`를
+통해서 현재 프로세스의 페이지 디렉토리에서 기록되어 있는 upage의 연결을 마찬가지로
+지워줘야 한다.
+
+
+ 방출 과정을 살펴보도록 하자. 방출 관련 부분은 유저 프로세스에 할당할 새로운 프레임이
+없을 경우에 실행되며, 공식 문서에 따라 LRU를 근사하는 clock 알고리즘에 따라서 
+방출될 프레임을 선정하게 된다. 기존 page allocator에 설정된 accessed 비트를 활용하여
+접근 된 경우 1로 설정되어 있다. 따라서 ft를 순회하면서 accessed가 1로 설정되어
+있다면 0으로 바꿔주는 과정을 리스트를 순회하며 수행하다가, 0인 프레임을 만나게 되면
+해당 프레임을 `swap_out()` 해주고, 해당하는 프레임 테이블 엔트리 또한 해제하는 방식으로
+구현할 수 있을 것으로 생각된다. `swap_out()` 의 보다 자세한 과정은 하단에서 서술하고자
+한다. 이 과정 중에 pinning 을 함께 확인하여 설정된 경우 accessed가 0 이더라도 
+방출하지 않아야 한다. 이외에도 유저 프로세스가 구성될 때 `setup_stack()`에서 kpage를 
+`palloc_get_page() `를 통해서 직접적으로 프레임을 할당해줬는데, 이러한 방식을 페이지
+얼로케이터를 직접 사용하는 대신, 프레임 테이블을 거쳐가는 방식으로 구현하여 스택 또한 
+프레임 테이블을 통해서 관리해줘야 한다.
+
+
+ 방출 과정에서 또 유념해야 할 부분이 있다. 하단에서 자세히 기술할 예정이지만, 
+spt를 이용할 수 있도록 해야 하므로 방출될 vpage가 선정되었다면, 그에 해당하는
+spte를 찾아, `swap_out()` 후에 해당하는 값에 맞게 업데이트해주는 부분이 필요하다.
+spte는 각 프로세스에 해시맵 형태로 할당되어 있으므로, 현재 프로세스->spt
+순으로 접근하여 대응되는 spte를 찾고, `swap_out()` 이후 swapped를 설정하고,
+스왑된 슬롯의 id를 받아와서 기록해야 한다.
 
 ## Supplemental Page Table
 페이지 테이블은 CPU로 하여금 가상 주소를 실제 물리적 주소로 번역하는 데 중요한
@@ -724,9 +1181,25 @@ swap table이 만약 각 쓰레드에 한정되어 지역적으로 선언될 경
 보장해주는 것이 필요하게 될 것이다.
 
 ### Design Proposal
- swap table은 공식 문서에서 제안한 것처럼 struct bitmap을 기반으로 구현하고자 한다.
-vm/swap.c 에 새롭게 파일을 생성하고 해당 파일 내에 새로운 변수를 저장하고자 한다.
-<!-- 구조를 선언해줘야 한다. 아직 구조를 자세히 설명을 안해놨다.-->
+```C
+/* From vm/swap.c */
+struct hash st;
+struct lock st_lock;
+```
+
+ swap table은 공식 문서에서 제안한 것처럼 비트맵을 기반으로 구현하고자 한다. 우선 
+st는 처음 init.c 의 `main()` 에서 초기화가 수행되어야 할 것이다. 해시맵의 크기는
+BLOCK_SWAP 역할을 가진 블록의 크기를 바탕으로 슬롯의 개수만큼 할당하고, lock을 
+설정해주는 과정이 필요하게 된다. `swap_in()` 에서는 lock을 취득하고 실행하게 된다.
+디스크에서 불러오고자 하는 spte를 입력받아야 하며, 입력받은 spte를 기반으로 
+`block_read()`를 통해서 스왑 디스크에서 해당하는 슬롯을 읽어오게 된다. 이후 
+사용된 스왑 슬롯을 st에서 해제하고, spte에 대응되는 vpage를 업데이트하는 것으로
+실행을 마무리하게 될 것이다. 반대로 `swap_out()` 에서는 kpage만 입력받게 되며,
+비어있는 스왑 슬롯을 st에서 할당받아서 block_write() 을 통해 해당 슬롯에
+그 프레임을 입력하게 된다. `swap_out()` 의 경우 위의 프레임 테이블에서 방출 과정에서
+선언되므로 반환된 스왑 슬롯의 id를 spte에 기록하게 되어 추후에 해당 spte를
+바탕으로 다시 `swap_in()` 하게 된다. 마찬가지로 `swap_out()` 도 lock을 취득한
+상황에서만 수행되어야 한다.
 
 ## On Process Termination
 ### Basic Descriptions and Limitations
@@ -735,19 +1208,19 @@ vm/swap.c 에 새롭게 파일을 생성하고 해당 파일 내에 새로운 �
 supplementary page table, file memory mapping, swap table 모든 것들에 
 대해서 할당을 해제해야 하며, lock 과 관련된 부분이나 혹은 열려있는 파일 등과 같이 유념하여 
 할당을 해제해야 할 부분들이 존재하지만, 현재 구현에서는 userprog/process.c 에서 정의된 
-process_exit()와 destory_process() 을 통해 수행되고 있으며, 현재 구현은 process에서
+`process_exit()`와 `destory_process()` 을 통해 수행되고 있으며, 현재 구현은 process에서
 열려 있는 file pointer 들을 close 해주며, directory 들을 free 해주는 방식으로 구현되어 
 있다. 하지만 이러한 방식으로는 앞서서 구현된 다양한 데이터들을 해제하지 못하며, swap slot 
 들에 사용된 여러 데이터 또한 남아있는 채로 종료되게 된다. 따라서 해당 문제를 해결하고자 한다.
 
 ### Necessity and Design Proposal
  우선 on process termination 에 해당하는 구현은 userprog/process.c에 정의된,
-process_exit() 함수 내에서 구현을 하고자 한다. 처음으로 Supplementary Page Table의 
+`process_exit()` 함수 내에서 구현을 하고자 한다. 처음으로 Supplementary Page Table의 
 경우에도 위와 유사하다. 이번에는 모든 할당된 Page를 해제해줘야 하는데, 이 경우 dirty 를 
 확인하여 dirty 인 경우 디스크에 write 하고 그 이후애 해제해주는 방식으로 구현해야 한다.
 Swap Table에서는 현재 process가 사용하고 있는 (혹은 대응되는) swap slot들을 모두 
 찾아서 swap table에서 이를 해제하도록 변경해야 한다. File Memory Mapping 의 경우 
-기존에는 close_file() 만 수행했으나, load 과정 중에 열렸던 파일을 포함하여 S-page 
+기존에는 `close_file()` 만 수행했으나, load 과정 중에 열렸던 파일을 포함하여 S-page 
 table 에서 저장되어 있는 file 에 대한 정보도 함께 확인하여 모든 file 을 close 해줘야
 하는 방식으로 구현하고자 한다. 또한, dirty 를 추가적으로 함께 확인하여 수정되었다면 
 다시 write 해주는 과정이 필요하고, 그 이후 해당 memory mapping을 해제해주는 방식으로
@@ -756,4 +1229,7 @@ table 에서 저장되어 있는 file 에 대한 정보도 함께 확인하여 �
 사용하고 있는 frame 자체를 해제하는 것이 필요하다. 따라서 현재 process 에 대응되는 
 frame을 frame table에서 찾아서 이를 해제하고, 이 때 만약 해당 frame이 dirty 인 
 상황이라면 (수정되었다면) 해당 frame 의 데이터를 디스크에 write 하는 방식으로 
-저장해줘야 한다. 이후 frame을 해제하며 process 를 종료할 수 있게 된다.
+저장해줘야 한다. 이후 frame을 해제하며 process 를 종료할 수 있게 된다. 그 과정 중에서 
+추가로 확인해야 할 부분은 해당 프로세스가 Lock을 acquire 한 상태로 종료 시에 문제가 
+발생할 수 있으므로, 이 경우에도 현재 종료하는 프로세스가 갖고 있는 lock을 저장하고 있다가,
+마지막에 프로세스 종료 시 lock 또한 release 해줘야 한다.
