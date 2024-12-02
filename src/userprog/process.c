@@ -649,7 +649,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = ft_get_frame ();
+      uint8_t *kpage = ft_get_frame (upage);
       if (kpage == NULL)
         return false;
 
@@ -682,12 +682,13 @@ static bool
 setup_stack (void **esp) 
 {
   uint8_t *kpage;
+  uint8_t *upage = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
 
-  kpage = ft_get_frame ();
+  kpage = ft_get_frame (upage);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      success = install_page (upage, kpage, true);
       if (success)
         *esp = PHYS_BASE;
       else

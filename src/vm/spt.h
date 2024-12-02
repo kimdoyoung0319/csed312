@@ -1,3 +1,6 @@
+#ifndef VM_SPT_H
+#define VM_SPT_H
+
 #include <hash.h>
 #include <lib/user/syscall.h>
 #include <lib/stdbool.h>
@@ -23,3 +26,5 @@ struct spte *spt_lookup (void *);
 unsigned spt_hash (const struct hash_elem *, void *);
 bool spt_less_func (const struct hash_elem *, const struct hash_elem *, 
                     void *);
+
+#endif
