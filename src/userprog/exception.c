@@ -163,14 +163,14 @@ page_fault (struct intr_frame *f)
            thread invokes page fault and reaching here? */
   ASSERT (thread_current ()->process != NULL);
 
-  struct spte *entry = spt_lookup (fault_addr);
+  uint8_t *upage = pg_round_down (fault_addr);
+  struct spte *entry = spt_lookup (upage);
 
   if (entry == NULL || !entry->writable && write || !not_present)
     kill (f);
 
   block_sector_t read_sector = entry->index;
   bool writable = entry->writable;
-  uint8_t *upage = pg_round_down (fault_addr);
   enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
   struct block *block_to_read = block_get_role (block_type);
 
@@ -186,7 +186,8 @@ page_fault (struct intr_frame *f)
   if (kpage == NULL)
     kill (f);
 
-  block_read (block_to_read, read_sector, kpage);
+  for (int i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
+    block_read (block_to_read, read_sector + i, kpage + i * BLOCK_SECTOR_SIZE);
   memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
   if (!process_install_page (upage, kpage, writable))
