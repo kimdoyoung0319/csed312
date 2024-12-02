@@ -42,5 +42,6 @@ pid_t process_execute (const char *file_name);
 int process_wait (pid_t);
 void process_activate (void);
 void process_exit (int);
+bool process_install_page (void *, void *, bool);
 
 #endif /* userprog/process.h */

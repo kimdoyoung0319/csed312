@@ -1,15 +1,19 @@
-#include "vm/spt.h"
-#include "threads/malloc.h"
-#include "threads/thread.h"
 #include <lib/user/syscall.h>
 #include <hash.h>
+#include "threads/malloc.h"
+#include "threads/thread.h"
+#include "threads/vaddr.h"
+#include "vm/spt.h"
 
 /* Makes basic SPTE which is from UADDR, refer to a disk sector INDEX, with 
    size of SIZE. */
 struct spte *
 spt_make_entry (void *uaddr, int size, block_sector_t index)
 {
-  struct spte *new = (struct spte *) malloc(sizeof (struct spte));
+  ASSERT (size < PGSIZE);
+  ASSERT (pg_round_down (uaddr) == uaddr);
+
+  struct spte *new = (struct spte *) malloc (sizeof (struct spte));
 
   new->size = size;
   new->swapped = true;

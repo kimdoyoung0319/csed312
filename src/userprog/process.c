@@ -379,6 +379,28 @@ process_exit (int status)
   cur->process = NULL;
   thread_exit ();
 }
+
+/* Adds a mapping from user virtual address UPAGE to kernel
+   virtual address KPAGE to the page table for current user process.
+   If WRITABLE is true, the user process may modify the page;
+   otherwise, it is read-only.
+   UPAGE must not already be mapped.
+   KPAGE should probably be a page obtained from the user pool
+   with palloc_get_page().
+   Returns true on success, false if UPAGE is already mapped or
+   if memory allocation fails. */
+bool
+process_install_page (void *upage, void *kpage, bool writable)
+{
+  struct process *this = thread_current ()->process;
+
+  ASSERT (this != NULL);
+
+  /* Verify that there's not already a page at that virtual
+     address, then map our page there. */
+  return (pagedir_get_page (this->pagedir, upage) == NULL
+          && pagedir_set_page (this->pagedir, upage, kpage, writable));
+}
 
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
@@ -568,10 +590,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   return success;
 }
 
-/* load() helpers. */
-
-static bool install_page (void *upage, void *kpage, bool writable);
-
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
 static bool
@@ -642,6 +660,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
+      /* TODO: Modify here to support lazy loading. */
       /* Calculate how to fill this page.
          We will read PAGE_READ_BYTES bytes from FILE
          and zero the final PAGE_ZERO_BYTES bytes. */
@@ -662,7 +681,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      if (!process_install_page (upage, kpage, writable)) 
         {
           palloc_free_page (kpage);
           return false; 
@@ -695,28 +714,6 @@ setup_stack (void **esp)
         palloc_free_page (kpage);
     }
   return success;
-}
-
-/* Adds a mapping from user virtual address UPAGE to kernel
-   virtual address KPAGE to the page table.
-   If WRITABLE is true, the user process may modify the page;
-   otherwise, it is read-only.
-   UPAGE must not already be mapped.
-   KPAGE should probably be a page obtained from the user pool
-   with palloc_get_page().
-   Returns true on success, false if UPAGE is already mapped or
-   if memory allocation fails. */
-static bool
-install_page (void *upage, void *kpage, bool writable)
-{
-  struct process *this = thread_current ()->process;
-
-  ASSERT (this != NULL);
-
-  /* Verify that there's not already a page at that virtual
-     address, then map our page there. */
-  return (pagedir_get_page (this->pagedir, upage) == NULL
-          && pagedir_set_page (this->pagedir, upage, kpage, writable));
 }
 
 /* Pushes SIZE bytes of data from SRC at the top of the stack specified
