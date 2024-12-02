@@ -1,11 +1,15 @@
 #include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
+#include "devices/block.h"
 #include "userprog/gdt.h"
 #include "userprog/process.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "vm/spt.h"
+#include "vm/frame.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -155,13 +159,46 @@ page_fault (struct intr_frame *f)
   if (is_user_vaddr (fault_addr) && !user)
     process_exit (-1);
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
-  kill (f);
+  /* TODO: Is this assertion valid? i.e. Is there any possibility that a kernel 
+           thread invokes page fault and reaching here? */
+  ASSERT (thread_current ()->process != NULL);
+
+  struct spte *entry = spt_lookup (fault_addr);
+
+  if (entry == NULL || !entry->writable && write || !not_present)
+    kill (f);
+
+  size_t read_bytes = entry->size;
+  block_sector_t read_sector = entry->index;
+  uint8_t *upage = fault_addr;
+  enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
+  struct block *block_to_read = block_get_role (block_type);
+  bool writable = entry->writable;
+
+  while (read_bytes > 0)
+    {
+      size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+      size_t page_zero_bytes = PGSIZE - page_read_bytes;
+
+      uint8_t *kpage = ft_get_frame ();
+
+      /* According to the implementation of ft_get_frame(), the return value 
+         must not be NULL. However, I added this to ensure completeness for 
+         this routine. Delete this if it passes the test set without this 
+         statements. */
+      if (kpage == NULL)
+        kill (f);
+
+      block_read (block_to_read, read_sector, kpage);
+      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+
+      if (!process_install_page (upage, kpage, writable))
+        {
+          ft_free_frame (kpage);
+          kill (f);
+        }
+      
+      read_bytes -= page_read_bytes;
+      upage += PGSIZE;
+    }
 }

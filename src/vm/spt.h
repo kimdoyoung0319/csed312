@@ -1,17 +1,22 @@
+#ifndef VM_SPT_H
+#define VM_SPT_H
+
 #include <hash.h>
 #include <lib/user/syscall.h>
 #include <lib/stdbool.h>
 #include "devices/block.h"
 
-/* Supplemental page table element. */
+/* Supplemental page table element that represents a block that is either 
+   swapped out of not loaded. */
 struct spte 
   {
-    int size;
-    bool swapped;
-    void *uaddr;
-    mapid_t mapid;
-    block_sector_t index;
-    struct hash_elem elem;
+    size_t size;             /* Total size of this memory block. */
+    bool swapped;            /* Has this set of pages swapped out? */
+    bool writable;           /* Is this set of pages writable? */
+    void *uaddr;             /* The starting address of this block. */
+    mapid_t mapid;           /* Map identifier for memory-mapped files. */
+    block_sector_t index;    /* Starting sector's index of this block. */
+    struct hash_elem elem;   /* Hash element for SPT. */
   };
 
 /* Basic operations on SPT. */
@@ -23,3 +28,5 @@ struct spte *spt_lookup (void *);
 unsigned spt_hash (const struct hash_elem *, void *);
 bool spt_less_func (const struct hash_elem *, const struct hash_elem *, 
                     void *);
+
+#endif /* vm/spt.h. */
