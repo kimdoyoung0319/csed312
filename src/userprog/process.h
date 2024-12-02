@@ -1,6 +1,7 @@
 #ifndef USERPROG_PROCESS_H
 #define USERPROG_PROCESS_H
 
+#include <hash.h>
 #include "threads/thread.h"
 #include "userprog/pid.h"
 
@@ -31,6 +32,9 @@ struct process
 
     /* Shared between filesys/file.c and process.c.*/
     struct list opened;           /* List of opened files. */
+
+    /* Shared between vm/spt.c and exceptions.c. */
+    struct hash spt;
   };
 
 void process_init (void);

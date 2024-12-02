@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <hash.h>
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -20,6 +21,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "vm/spt.h"
 
 #define WORD_SIZE (sizeof (intptr_t))
 
@@ -241,6 +243,7 @@ make_process (struct process *par, struct thread *t)
   this->waited = false;
   list_init (&this->children);
   list_init (&this->opened);
+  hash_init (&this->spt, spt_hash, spt_less_func);
   t->process = this;
 
   if (par != NULL)
@@ -251,6 +254,8 @@ make_process (struct process *par, struct thread *t)
 
   if ((this->pagedir = pagedir_create ()) == NULL)
     {
+      /* TODO: What happens if the current process is pushed into parent's 
+               children list, but the pagedir_create() fails? */
       free (this);
       return NULL;
     }
