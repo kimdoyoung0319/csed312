@@ -13,7 +13,7 @@ spt_make_entry (void *uaddr, int size, block_sector_t index)
   ASSERT (size < PGSIZE);
   ASSERT (pg_round_down (uaddr) == uaddr);
 
-  struct spte *new = (struct spte *) malloc(sizeof (struct spte));
+  struct spte *new = (struct spte *) malloc (sizeof (struct spte));
 
   new->size = size;
   new->swapped = true;
