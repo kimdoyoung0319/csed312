@@ -35,6 +35,9 @@ struct process
 
     /* Shared between vm/spt.c and exceptions.c. */
     struct hash spt;
+
+    /* Using for stack pointer when page fault while handling systemcalls */
+    void *uesp;
   };
 
 void process_init (void);

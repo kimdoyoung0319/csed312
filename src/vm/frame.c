@@ -1,5 +1,6 @@
 /* Frame table implementation. */
 #include "frame.h"
+#include "threads/vaddr.h"
 
 /* List of frame table, frame table lock and cursor for clock algorithm  */
 struct list ft;
@@ -60,17 +61,18 @@ ft_get_frame (void *uaddr)
         }
 
       /* Check disk number for swap out and write to actual block */
-      block_sector_t index = st_out ();
+      block_sector_t index = st_out () * (PGSIZE / BLOCK_SECTOR_SIZE);
       if (index == (block_sector_t) -1) 
         {
+          lock_release (&ft_lock);
           return NULL;
         }
 
       size_t size = 0;
-      for (size = 0; size < 8;)
+      for (size = 0; size < PGSIZE / BLOCK_SECTOR_SIZE;)
         block_write (block_get_role (BLOCK_SWAP), 
-                    index * 8 + size, 
-                    out_fte->kaddr + (size++ * 512));
+                    index + size, 
+                    out_fte->kaddr + (size++ * BLOCK_SECTOR_SIZE));
 
       /* Update spte and free the frame */
       struct spte *out_spte = spt_lookup (out_fte->uaddr);
@@ -83,7 +85,10 @@ ft_get_frame (void *uaddr)
 
       /* Return NULL if allocation fails */
       if (kaddr == NULL)
+      {
+        lock_release (&ft_lock);
         return NULL;
+      }
     }
   
   this->process = thread_current ()->process;
@@ -116,7 +121,7 @@ ft_free_frame (void *kaddr)
         break;
     }
 
-  /* CHECK: Verify if this section is necessary */
+  /* CHECK : Verify if this section is necessary */
   /* if (this == NULL)
      sys_exit (-1); */
   
@@ -131,7 +136,7 @@ ft_free_frame (void *kaddr)
 void
 st_init (void)
 {
-  st = bitmap_create ((block_size (block_get_role (BLOCK_SWAP))) / 8);
+  st = bitmap_create ((block_size (block_get_role (BLOCK_SWAP))) / (PGSIZE / BLOCK_SECTOR_SIZE));
   bitmap_set_all (st, false);
   lock_init (&st_lock);
 }

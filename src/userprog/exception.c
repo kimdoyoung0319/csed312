@@ -154,11 +154,6 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* If it is caused by invalid address passed to the kernel, kill user process
-     while making no harm to the kernel. */
-  if (is_user_vaddr (fault_addr) && !user)
-    process_exit (-1);
-
   /* TODO: Is this assertion valid? i.e. Is there any possibility that a kernel 
            thread invokes page fault and reaching here? */
   ASSERT (thread_current ()->process != NULL);
@@ -169,6 +164,17 @@ page_fault (struct intr_frame *f)
   if (entry == NULL || !entry->writable && write || !not_present)
     kill (f);
 
+  
+  uint8_t *uesp = user ? f->esp : thread_current ()->process->uesp;
+  bool growthable = uesp != NULL && (uint8_t *)uesp - 32 <= fault_addr && is_user_vaddr (fault_addr) ? true : false;
+
+  if (not_present && growthable)
+    {
+      /* stack growth 처리하기 */
+
+      return;
+    }
+
   block_sector_t read_sector = entry->index;
   bool writable = entry->writable;
   enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
@@ -177,7 +183,7 @@ page_fault (struct intr_frame *f)
   size_t page_read_bytes = entry->size;
   size_t page_zero_bytes = PGSIZE - entry->size;
 
-  uint8_t *kpage = ft_get_frame ();
+  uint8_t *kpage = ft_get_frame (upage);
 
   /* According to the implementation of ft_get_frame(), the return value 
      must not be NULL. However, I added this to ensure completeness for 
@@ -189,6 +195,7 @@ page_fault (struct intr_frame *f)
   for (int i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
     block_read (block_to_read, read_sector + i, kpage + i * BLOCK_SECTOR_SIZE);
   memset (kpage + page_read_bytes, 0, page_zero_bytes);
+  st_in (read_sector);
 
   if (!process_install_page (upage, kpage, writable))
     {
