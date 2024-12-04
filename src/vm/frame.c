@@ -61,14 +61,16 @@ ft_get_frame (void *uaddr)
         }
 
       /* Check disk number for swap out and write to actual block */
-      block_sector_t index = st_out () * (PGSIZE / BLOCK_SECTOR_SIZE);
-      if (index == (block_sector_t) -1) 
+
+      block_sector_t index = st_out ();
+      if (index == BLOCK_FAILED) 
         {
           lock_release (&ft_lock);
           return NULL;
         }
+      index = index * (PGSIZE / BLOCK_SECTOR_SIZE);
 
-      size_t size = 0;
+      block_sector_t size = 0;
       for (size = 0; size < PGSIZE / BLOCK_SECTOR_SIZE;)
         block_write (block_get_role (BLOCK_SWAP), 
                     index + size, 
@@ -108,7 +110,10 @@ ft_get_frame (void *uaddr)
 void
 ft_free_frame (void *kaddr)
 {
-  lock_acquire (&ft_lock);
+  bool chk = lock_held_by_current_thread (&ft_lock);
+
+  if (!chk)
+    lock_acquire (&ft_lock);
 
   struct fte *this;
   struct list_elem *e;
@@ -130,7 +135,8 @@ ft_free_frame (void *kaddr)
   pagedir_clear_page (this->process->pagedir, this->uaddr);
   free (this);
 
-  lock_release (&ft_lock);
+  if (!chk)
+    lock_release (&ft_lock);
 }
 
 void
@@ -159,10 +165,11 @@ st_out (void)
 {
   lock_acquire (&st_lock);
   block_sector_t index = bitmap_scan (st, 0, 1, false);
-  if (index == BITMAP_ERROR)
+    
+  if ((size_t) index == BITMAP_ERROR)
     {
       lock_release (&st_lock);
-      return -1;
+      return BLOCK_FAILED;
     }
   bitmap_set (st, index, true);
   lock_release (&st_lock);

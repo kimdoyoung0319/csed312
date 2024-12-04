@@ -16,6 +16,7 @@ struct spte
     void *uaddr;             /* The starting address of this page. */
     mapid_t mapid;           /* Map identifier for memory-mapped files. */
     block_sector_t index;    /* Starting sector's index of this block. */
+    struct file *file;
     struct hash_elem elem;   /* Hash element for SPT. */
   };
 

@@ -154,52 +154,146 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* TODO: Is this assertion valid? i.e. Is there any possibility that a kernel 
-           thread invokes page fault and reaching here? */
-  ASSERT (thread_current ()->process != NULL);
-
   uint8_t *upage = pg_round_down (fault_addr);
   struct spte *entry = spt_lookup (upage);
+  struct process *tmp = thread_current ()->process;
+  uint8_t *uesp = user ? f->esp : tmp->uesp;
 
-  if (entry == NULL || !entry->writable && write || !not_present)
-    kill (f);
+  bool growthable = uesp != NULL 
+                    && (uint8_t *)uesp - 32 <= fault_addr 
+                    && is_user_vaddr (fault_addr) 
+                    && is_user_limit (fault_addr) ? true : false;
 
-  
-  uint8_t *uesp = user ? f->esp : thread_current ()->process->uesp;
-  bool growthable = uesp != NULL && (uint8_t *)uesp - 32 <= fault_addr && is_user_vaddr (fault_addr) ? true : false;
+  // printf ("\n not_present : %d ", not_present);
+  // printf ("\n write : %d ", write);
+  // printf ("\n growthable : %d \n", growthable);
 
-  if (not_present && growthable)
+  if (entry == NULL)
     {
-      /* stack growth 처리하기 */
+      /* 정상적인 stack growth 상황 */
+      if (not_present && growthable)
+        {
+          /* frame table 에 추가하기 */
+          void *kpage = ft_get_frame (upage);
+          if (kpage == NULL)
+            {
+              process_exit (-1);
+            }
 
-      return;
+          /* spt 엔트리 생성하여 할당하기 */
+          entry = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
+          if (entry == NULL)
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+
+          /* spt 에 spte 추가하기 */
+          entry->swapped = false;
+          entry->writable = true;
+          hash_insert (&thread_current ()->process->spt, &entry->elem);
+          if (!process_install_page (upage, kpage, true))
+            {
+
+              ft_free_frame (kpage);
+              spt_free_entry (entry);
+              process_exit (-1);
+            }
+        }
+
+      /* 잘못된 상황 */
+      else
+        {
+          process_exit (-1);
+        }
     }
-
-  block_sector_t read_sector = entry->index;
-  bool writable = entry->writable;
-  enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
-  struct block *block_to_read = block_get_role (block_type);
-
-  size_t page_read_bytes = entry->size;
-  size_t page_zero_bytes = PGSIZE - entry->size;
-
-  uint8_t *kpage = ft_get_frame (upage);
-
-  /* According to the implementation of ft_get_frame(), the return value 
-     must not be NULL. However, I added this to ensure completeness for 
-     this routine. Delete this if it passes the test set without this 
-     statements. */
-  if (kpage == NULL)
-    kill (f);
-
-  for (int i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
-    block_read (block_to_read, read_sector + i, kpage + i * BLOCK_SECTOR_SIZE);
-  memset (kpage + page_read_bytes, 0, page_zero_bytes);
-  st_in (read_sector);
-
-  if (!process_install_page (upage, kpage, writable))
+  else /* Lazy Loading or Swap in or File Memory Mapped??*/
     {
-      ft_free_frame (kpage);
-      kill (f);
-    }
+      block_sector_t read_sector = entry->index;
+      bool writable = entry->writable;
+      enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
+      struct block *block_to_read = block_get_role (block_type);
+
+      // size_t page_read_bytes = entry->size;
+      // size_t page_zero_bytes = PGSIZE - entry->size;
+
+      // uint8_t *kpage = ft_get_frame (upage);
+
+      // /* According to the implementation of ft_get_frame(), the return value 
+      //   must not be NULL. However, I added this to ensure completeness for 
+      //   this routine. Delete this if it passes the test set without this 
+      //   statements. */
+      // if (kpage == NULL)
+      //   kill (f);
+
+      // for (int i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
+      //   block_read (block_to_read, read_sector + i, kpage + i * BLOCK_SECTOR_SIZE);
+      // memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      // st_in (read_sector);
+
+      // if (!process_install_page (upage, kpage, writable))
+      //   {
+      //     ft_free_frame (kpage);
+      //     kill (f);
+      //   }
+      
+      /* Lazy Loading 인 경우 */
+      if (entry->index != BLOCK_FAILED 
+          && !entry->swapped)
+        {
+          process_exit (-1);
+          /* load segment 에서 spte 만 생성하여 넣어주고 여기서 실제 할당하기 */
+        }
+      /* swap in 하는 경우 */
+      else if (entry->index != BLOCK_FAILED 
+              && entry->swapped)
+        {
+          /* 496 일 때 ft_get_frame 을 못한다 */
+          if (entry->index == 488)
+            {
+              // printf ("wowwow : %d\n", entry->index);
+              entry->index = 488;
+            }
+
+          if (entry->index == 496)
+            {
+              // printf ("wowwow : %d\n", entry->index);
+              entry->index = 496;
+            }
+
+          void *kpage = ft_get_frame (upage); 
+          // printf ("swap in from : %d %x -> %x\n", entry->index, entry->uaddr, kpage);
+
+          if (kpage == NULL)
+            process_exit (-1);
+
+          if (!process_install_page (upage, kpage, true))
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+
+          block_sector_t size = 0;
+          for (size = 0; size < PGSIZE / BLOCK_SECTOR_SIZE;)
+            block_read (block_get_role (BLOCK_SWAP), 
+                        entry->index + size, 
+                        kpage + (size++ * BLOCK_SECTOR_SIZE));
+          st_in (entry->index / (PGSIZE / BLOCK_SECTOR_SIZE));
+          entry->swapped = false;
+          entry->index = BLOCK_FAILED;
+        }
+      /* file memory mapped */
+      else if (entry->mapid != BLOCK_FAILED)
+        {
+          process_exit (-1);
+          /* 메모리 매핑은 되었지만 아직 로딩되지 않은 경우 */
+          /* 대응되는 mmap 을 참고하여 (이전에 생성해줘야 함) */
+          /* memory mapped 된 uaddr과 map id 를 기반으로 block_read 수행 */
+        }
+      /* error */
+      else
+        {
+          process_exit (-1);
+        }
+    } 
 }

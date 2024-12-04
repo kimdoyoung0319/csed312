@@ -669,10 +669,25 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
+      struct process *this = thread_current ()->process;
+      if (this == NULL)
+        return false;
+
       uint8_t *kpage = ft_get_frame (upage);
       if (kpage == NULL)
         return false;
 
+      struct spte *new_spte = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
+      if (new_spte == NULL)
+        {
+          ft_free_frame (kpage);
+          return false;
+        }
+      
+      new_spte->swapped = false;
+      new_spte->writable = true;
+      hash_insert (&this->spt, &new_spte->elem);
+      
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
@@ -710,7 +725,15 @@ setup_stack (void **esp)
     {
       success = process_install_page (upage, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        {
+          *esp = PHYS_BASE;
+          struct spte *spte = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
+          spte->swapped = false;
+          spte->writable = true;
+          
+          struct process *this = thread_current ()->process;
+          hash_insert (&this->spt, &spte->elem);
+        }
       else
         palloc_free_page (kpage);
     }
