@@ -128,7 +128,7 @@ ft_free_frame (void *kaddr)
 
   /* CHECK : Verify if this section is necessary */
   /* if (this == NULL)
-     sys_exit (-1); */
+     process_exit (-1); */
   
   list_remove (&this->elem);
   palloc_free_page (this->kaddr);

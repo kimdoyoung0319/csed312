@@ -17,6 +17,10 @@ static long long page_fault_cnt;
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
 
+/* Lock to ensure consistency of the file system. Definition can be found in
+   userprog/syscall.c. */
+extern struct lock filesys_lock;
+
 /* Registers handlers for interrupts that can be caused by user
    programs.
 
@@ -208,62 +212,40 @@ page_fault (struct intr_frame *f)
         }
     }
   else /* Lazy Loading or Swap in or File Memory Mapped??*/
-    {
-      block_sector_t read_sector = entry->index;
-      bool writable = entry->writable;
-      enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
-      struct block *block_to_read = block_get_role (block_type);
-
-      // size_t page_read_bytes = entry->size;
-      // size_t page_zero_bytes = PGSIZE - entry->size;
-
-      // uint8_t *kpage = ft_get_frame (upage);
-
-      // /* According to the implementation of ft_get_frame(), the return value 
-      //   must not be NULL. However, I added this to ensure completeness for 
-      //   this routine. Delete this if it passes the test set without this 
-      //   statements. */
-      // if (kpage == NULL)
-      //   kill (f);
-
-      // for (int i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
-      //   block_read (block_to_read, read_sector + i, kpage + i * BLOCK_SECTOR_SIZE);
-      // memset (kpage + page_read_bytes, 0, page_zero_bytes);
-      // st_in (read_sector);
-
-      // if (!process_install_page (upage, kpage, writable))
-      //   {
-      //     ft_free_frame (kpage);
-      //     kill (f);
-      //   }
-      
+    {      
       /* Lazy Loading 인 경우 */
-      if (entry->index != BLOCK_FAILED 
-          && !entry->swapped)
+      if (entry->lazy)
         {
-          process_exit (-1);
-          /* load segment 에서 spte 만 생성하여 넣어주고 여기서 실제 할당하기 */
+          uint8_t *kpage = ft_get_frame (entry->uaddr);
+          if (kpage == NULL)
+            process_exit (-1);
+          
+          /* Load this page. */
+          lock_acquire (&filesys_lock);
+          file_seek (entry->file, entry->ofs);
+          bool chk = file_read (entry->file, kpage, entry->size) == (int) entry->size;
+          lock_release (&filesys_lock);
+
+          if (chk)
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+
+          /* Add the page to the process's address space. */
+          if (!process_install_page (entry->uaddr, kpage, entry->writable)) 
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+          
+          entry->lazy = false;
         }
       /* swap in 하는 경우 */
       else if (entry->index != BLOCK_FAILED 
               && entry->swapped)
         {
-          /* 496 일 때 ft_get_frame 을 못한다 */
-          if (entry->index == 488)
-            {
-              // printf ("wowwow : %d\n", entry->index);
-              entry->index = 488;
-            }
-
-          if (entry->index == 496)
-            {
-              // printf ("wowwow : %d\n", entry->index);
-              entry->index = 496;
-            }
-
           void *kpage = ft_get_frame (upage); 
-          // printf ("swap in from : %d %x -> %x\n", entry->index, entry->uaddr, kpage);
-
           if (kpage == NULL)
             process_exit (-1);
 

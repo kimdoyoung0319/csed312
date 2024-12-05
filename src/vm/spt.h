@@ -4,8 +4,11 @@
 #include <hash.h>
 #include <lib/user/syscall.h>
 #include <lib/stdbool.h>
+#include "userprog/pagedir.h"
 #include "devices/block.h"
+#include "vm/frame.h"
 
+typedef int32_t off_t;
 /* Supplemental page table element that represents a page that is either 
    swapped out of not loaded. */
 struct spte 
@@ -17,6 +20,8 @@ struct spte
     mapid_t mapid;           /* Map identifier for memory-mapped files. */
     block_sector_t index;    /* Starting sector's index of this block. */
     struct file *file;
+    bool lazy;
+    off_t ofs;
     struct hash_elem elem;   /* Hash element for SPT. */
   };
 
@@ -24,6 +29,7 @@ struct spte
 struct spte *spt_make_entry (void *, int, block_sector_t);
 void spt_free_entry (struct spte *);
 struct spte *spt_lookup (void *);
+void spt_free_hash (struct hash_elem *h, void *aux UNUSED);
 
 /* Auxiliary functions to be used for hash table. */
 unsigned spt_hash (const struct hash_elem *, void *);

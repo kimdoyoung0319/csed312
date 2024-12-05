@@ -21,6 +21,8 @@ spt_make_entry (void *uaddr, int size, block_sector_t index)
   new->mapid = MAP_FAILED;
   new->index = index;
   new->file = NULL;
+  new->lazy = false;
+  new->ofs = 0;
 
   return new;
 }
@@ -30,6 +32,26 @@ void
 spt_free_entry (struct spte *spte)
 {
   free (spte);
+}
+
+void
+spt_free_hash (struct hash_elem *h, void *aux UNUSED)
+{
+  struct spte *e = hash_entry (h, struct spte, elem);
+  if (e->swapped == false && e->lazy == false)
+    {
+      void *kaddr = pagedir_get_page (thread_current ()->process->pagedir, e->uaddr);
+
+      if (kaddr != NULL)
+        ft_free_frame (kaddr);
+    }
+
+  else if (e->swapped == true && e->index != BLOCK_FAILED)
+    {
+      st_in (e->index / (PGSIZE / BLOCK_SECTOR_SIZE));
+    }
+  
+  free (e);
 }
 
 /* Finds SPTE with user address UADDR, under the current process's context. 

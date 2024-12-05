@@ -326,6 +326,7 @@ process_exit (int status)
 {
   struct file *fp;
   struct list_elem *e, *next;
+  struct hash_elem *h;
   struct thread *cur = thread_current ();
   struct process *child, *this = cur->process;
 
@@ -366,6 +367,9 @@ process_exit (int status)
       file_close (fp);
       e = next;
     }
+
+  /* clean frame table, sp table and swap entries with process aspective */
+  hash_destroy (&this->spt, spt_free_hash);
 
   printf ("%s: exit(%d)\n", this->name, status);
 
@@ -673,40 +677,24 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (this == NULL)
         return false;
 
-      uint8_t *kpage = ft_get_frame (upage);
-      if (kpage == NULL)
+      struct spte *entry = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
+      if (entry == NULL)
         return false;
-
-      struct spte *new_spte = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
-      if (new_spte == NULL)
-        {
-          ft_free_frame (kpage);
-          return false;
-        }
       
-      new_spte->swapped = false;
-      new_spte->writable = true;
-      hash_insert (&this->spt, &new_spte->elem);
-      
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          ft_free_frame (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!process_install_page (upage, kpage, writable)) 
-        {
-          ft_free_frame (kpage);
-          return false; 
-        }
+      entry->size = page_read_bytes;
+      entry->swapped = false;
+      entry->writable = writable;
+      entry->file = file;
+      entry->uaddr = upage;
+      entry->lazy = true;
+      entry->ofs = ofs;
+      hash_insert (&this->spt, &entry->elem);
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+      ofs += page_read_bytes;
     }
   return true;
 }
