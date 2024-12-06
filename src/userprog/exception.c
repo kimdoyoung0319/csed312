@@ -222,7 +222,7 @@ page_fault (struct intr_frame *f)
           
           /* Load this page. */
           file_seek (entry->file, entry->ofs);
-          if (file_read (entry->file, kpage, entry->size) == (int) entry->size)
+          if (file_read (entry->file, kpage, entry->size) != (int) entry->size)
             {
               ft_free_frame (kpage);
               process_exit (-1);
