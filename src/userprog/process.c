@@ -1,5 +1,3 @@
-/* TODO: Add #ifndef USERPROG ... #endif guard for all code sections associated
-         with user process. */
 #include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
@@ -20,6 +18,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "vm/page.h"
+#include "vm/frame.h"
 
 #define WORD_SIZE (sizeof (intptr_t))
 
@@ -626,12 +626,15 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
 static bool
-load_segment (struct file *file, off_t ofs, uint8_t *upage,
+load_segment (struct file *file, off_t ofs, uint8_t *uaddr,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
 {
+  struct process *this = thread_current ()->process;
+
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
-  ASSERT (pg_ofs (upage) == 0);
+  ASSERT (pg_ofs (uaddr) == 0);
   ASSERT (ofs % PGSIZE == 0);
+  ASSERT (this != NULL);
 
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
@@ -643,29 +646,35 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
+      /* TODO: Modify this to use frame_allocate(). */
+      struct page *upage = page_make (uaddr, this->pagedir);
+      uint8_t *kaddr = frame_allocate (upage, false);
+      if (kaddr == NULL)
         return false;
 
       /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+      if (file_read (file, kaddr, page_read_bytes) != (int) page_read_bytes)
         {
-          palloc_free_page (kpage);
+          /* TODO: Modify this to use frame_free(). */
+          frame_free (kaddr);
+          page_destroy (upage);
           return false; 
         }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      memset (kaddr + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      if (!install_page (uaddr, kaddr, writable)) 
         {
-          palloc_free_page (kpage);
+          /* TODO: Modify this to use frame_free(). */
+          frame_free (kaddr);
+          page_destroy (upage);
           return false; 
         }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
-      upage += PGSIZE;
+      uaddr += PGSIZE;
     }
   return true;
 }
@@ -675,17 +684,27 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
-  uint8_t *kpage;
-  bool success = false;
+  struct process *this = thread_current ()->process;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL) 
+  ASSERT (this != NULL);
+
+  uint8_t *kaddr;
+  bool success = false;
+  struct page *upage = page_make (PHYS_BASE, this->pagedir);
+
+  /* TODO: Modify this to use frame_allocate(). */
+  kaddr = frame_allocate (upage, true);
+  if (kaddr != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kaddr, true);
       if (success)
         *esp = PHYS_BASE;
       else
-        palloc_free_page (kpage);
+        {
+          /* TODO: Modify this to use frame_free(). */
+          frame_free (kaddr);
+          page_destroy (upage);
+        }
     }
   return success;
 }
