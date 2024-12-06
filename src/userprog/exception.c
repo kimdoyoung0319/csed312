@@ -185,7 +185,7 @@ page_fault (struct intr_frame *f)
             }
 
           /* spt 엔트리 생성하여 할당하기 */
-          entry = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
+          entry = spt_make_entry (upage, PGSIZE);
           if (entry == NULL)
             {
               ft_free_frame (kpage);

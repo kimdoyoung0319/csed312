@@ -675,10 +675,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
       /* Get a page of memory. */
       struct process *this = thread_current ()->process;
-      if (this == NULL)
-        return false;
-
-      struct process *this = thread_current ()->process;
       struct spte *entry = spt_make_entry (upage, PGSIZE);
       if (entry == NULL)
         return false;

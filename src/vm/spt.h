@@ -2,12 +2,10 @@
 #define VM_SPT_H
 
 #include <hash.h>
-#include <lib/user/syscall.h>
 #include <lib/stdbool.h>
-#include "userprog/pagedir.h"
+#include "userprog/mapid_t.h"
 #include "userprog/pagedir.h"
 #include "devices/block.h"
-#include "vm/frame.h"
 #include "vm/frame.h"
 
 typedef int32_t off_t;
@@ -22,6 +20,7 @@ struct spte
     void *uaddr;             /* The starting address of this page. */
     mapid_t mapid;           /* Map identifier for memory-mapped files. */
     struct file *file;
+    int index;
     bool lazy;
     off_t ofs;
     struct hash_elem elem;   /* Hash element for SPT. */

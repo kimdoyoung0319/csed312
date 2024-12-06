@@ -55,6 +55,8 @@ static uint32_t write (void *);
 static void seek (void *);
 static uint32_t tell (void *);
 static void close (void *);
+static uint32_t mmap (void *);
+static void munmap (void *);
 
 void
 syscall_init (void) 
@@ -85,7 +87,7 @@ syscall_handler (struct intr_frame *f)
     case SYS_TELL: f->eax = tell (f->esp); break;   
     case SYS_CLOSE: close (f->esp); break;
     case SYS_MMAP: f->eax = mmap (f->esp); break;
-    case SYS_MUNMAP: mummap (f->esp); break;
+    case SYS_MUNMAP: munmap (f->esp); break;
   }
 }
 
@@ -219,21 +221,6 @@ allocate_mapid (void)
   return mapid;
 }
 
-/* Returns fresh file descriptor to represent a newly opened file. */
-static int
-allocate_fd (void)
-{
-  /* File descriptor of 0 and 1 are reserved for stdin and stdout. */
-  static int next_fd = 2;
-  int fd;
-
-  lock_acquire (&fd_lock);
-  fd = next_fd++;
-  lock_release (&fd_lock);
-
-  return fd;
-}
-
 /* Checks if a file-memory mapping for file FP, starting from UADDR is valid
    or not. */
 static bool
@@ -276,11 +263,11 @@ static struct mapping *
 retrieve_mapping (mapid_t mapid)
 {
   struct list_elem *e;
-  struct procsess *this = thread_current ()->process;
+  struct process *this = thread_current ()->process;
 
   ASSERT (this != NULL)
 
-  for (e = list_begin (&this->mapping); e != list_end (&this->mappings);
+  for (e = list_begin (&this->mappings); e != list_end (&this->mappings);
        e = list_next (e))
     {
       struct mapping *mapping = list_entry (e, struct mapping, elem);
@@ -498,7 +485,7 @@ mmap (void *esp)
   ASSERT(this != NULL);
 
   if (!is_valid_mapping (addr, fp))
-    return MAPID_ERROR;
+    return MAP_FAILED;
 
   fp = file_reopen (fp);
   mapid = allocate_mapid ();

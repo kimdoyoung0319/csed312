@@ -22,10 +22,11 @@ spt_make_entry (void *uaddr, int size)
   entry->size = size;
   entry->swapped = true;
   entry->uaddr = uaddr;
-  entry->mapid = MAPID_ERROR;
+  entry->mapid = MAP_FAILED;
   entry->file = NULL;
   entry->lazy = false;
   entry->ofs = 0;
+  entry->index = BLOCK_FAILED;
 
   return entry;
 }
