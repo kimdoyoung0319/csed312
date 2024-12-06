@@ -3,6 +3,7 @@
 
 #include "threads/thread.h"
 #include "userprog/pid.h"
+#include "vm/page.h"
 
 /* States in a process's life cycle. An orphaned process is responsible to
    destory itself. For alive processes, their parent is responsible to destroy
@@ -31,6 +32,8 @@ struct process
 
     /* Shared between filesys/file.c and process.c.*/
     struct list opened;           /* List of opened files. */
+
+    struct pagerec *pagerec;      /* Page records. */
   };
 
 void process_init (void);

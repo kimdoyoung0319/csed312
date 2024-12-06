@@ -241,6 +241,8 @@ make_process (struct process *par, struct thread *t)
   this->waited = false;
   list_init (&this->children);
   list_init (&this->opened);
+  this->pagerec = pagerec_create ();
+
   t->process = this;
 
   if (par != NULL)
@@ -636,7 +638,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *uaddr,
   ASSERT (ofs % PGSIZE == 0);
   ASSERT (this != NULL);
 
-  file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -645,37 +646,23 @@ load_segment (struct file *file, off_t ofs, uint8_t *uaddr,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
-      /* TODO: Modify this to use frame_allocate(). */
-      struct page *upage = page_make (uaddr, this->pagedir);
-      uint8_t *kaddr = frame_allocate (upage, false);
-      if (kaddr == NULL)
+      /* Make a page to be inserted to the page record. */
+      struct page *upage = page_from_file (uaddr, this->pagedir, file, ofs);
+
+      /* TODO: Shouldn't we clean all the pages allocated? */
+      if (upage == NULL)
         return false;
 
-      /* Load this page. */
-      if (file_read (file, kaddr, page_read_bytes) != (int) page_read_bytes)
-        {
-          /* TODO: Modify this to use frame_free(). */
-          frame_free (kaddr);
-          page_destroy (upage);
-          return false; 
-        }
-      memset (kaddr + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!install_page (uaddr, kaddr, writable)) 
-        {
-          /* TODO: Modify this to use frame_free(). */
-          frame_free (kaddr);
-          page_destroy (upage);
-          return false; 
-        }
+      /* Register this page onto current process's page record. */
+      pagerec_set_page (&this->pagerec, upage);
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       uaddr += PGSIZE;
+      ofs += page_read_bytes;
     }
+
   return true;
 }
 
@@ -690,18 +677,17 @@ setup_stack (void **esp)
 
   uint8_t *kaddr;
   bool success = false;
-  struct page *upage = page_make (PHYS_BASE, this->pagedir);
+  struct page *upage = page_from_memory (PHYS_BASE, this->pagedir);
 
-  /* TODO: Modify this to use frame_allocate(). */
   kaddr = frame_allocate (upage, true);
   if (kaddr != NULL) 
     {
+      pagerec_set_page (&this->pagerec, upage);
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kaddr, true);
       if (success)
         *esp = PHYS_BASE;
       else
         {
-          /* TODO: Modify this to use frame_free(). */
           frame_free (kaddr);
           page_destroy (upage);
         }

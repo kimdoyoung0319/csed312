@@ -3,7 +3,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <hash.h>
 #include "devices/block.h"
+#include "filesys/off_t.h"
 
 /* Page records. */
 struct pagerec;
@@ -28,13 +30,25 @@ struct page
     struct hash_elem elem;
   };
 
+/* Basic operations on page records. */
+struct pagerec *pagerec_create (void);
+void pagerec_destroy (struct pagerec *);
+
+/* Modification and access for page records. */
+void pagerec_set_page (struct pagerec *, struct page *);
+struct page *pagerec_get_page (struct pagerec *, void *);
+void pagerec_clear_page (struct pagerec *, struct page *);
+
 /* Basic operations on pages. */
-struct page *page_from_memory (void *, bool writable);
-struct page *page_from_file (void);
+struct page *page_from_memory (void *, bool);
+struct page *page_from_file (void *, bool, struct file *, off_t);
 struct page *page_from_swap (void);
 void page_destroy (struct page *);
 
-void page_mark_present (struct page *);
+/* Modifications on pages. */
+void page_set_present (struct page *, bool);
+void page_swap_out (struct page *);
+void *page_swap_in (struct page *);
 
 /* States of a page, stored in page directory. */
 bool page_is_accessed (struct page *);

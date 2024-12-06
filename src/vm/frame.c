@@ -127,6 +127,7 @@ frame_free (void *kaddr)
    from its page directory. Returns the kernel address of the frame to be 
    free'd after all these task. Notice that this does not free the struct frame
    itself. You can use it freely again with new kernel virtual address. */
+/* TODO: Implement swap out. */
 static void *
 evict (struct frame *frame)
 {
