@@ -17,10 +17,6 @@ static long long page_fault_cnt;
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
 
-/* Lock to ensure consistency of the file system. Definition can be found in
-   userprog/syscall.c. */
-extern struct lock filesys_lock;
-
 /* Registers handlers for interrupts that can be caused by user
    programs.
 
@@ -168,10 +164,6 @@ page_fault (struct intr_frame *f)
                     && is_user_vaddr (fault_addr) 
                     && is_user_limit (fault_addr) ? true : false;
 
-  // printf ("\n not_present : %d ", not_present);
-  // printf ("\n write : %d ", write);
-  // printf ("\n growthable : %d \n", growthable);
-
   if (entry == NULL)
     {
       /* 정상적인 stack growth 상황 */
@@ -221,12 +213,9 @@ page_fault (struct intr_frame *f)
             process_exit (-1);
           
           /* Load this page. */
-          lock_acquire (&filesys_lock);
           file_seek (entry->file, entry->ofs);
-          bool chk = file_read (entry->file, kpage, entry->size) == (int) entry->size;
-          lock_release (&filesys_lock);
 
-          if (chk)
+          if (!file_read (entry->file, kpage, entry->size) == (int) entry->size)
             {
               ft_free_frame (kpage);
               process_exit (-1);
