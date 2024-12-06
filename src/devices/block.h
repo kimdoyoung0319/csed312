@@ -13,6 +13,7 @@
 /* Index of a block device sector.
    Good enough for devices up to 2 TB. */
 typedef uint32_t block_sector_t;
+#define BLOCK_FAILED ((block_sector_t) -1)
 
 /* Format specifier for printf(), e.g.:
    printf ("sector=%"PRDSNu"\n", sector); */

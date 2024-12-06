@@ -109,12 +109,11 @@ struct thread
     struct list_elem donorelem;     /* List element for donating. */
     struct lock *waiting;           /* Lock this thread is waiting for. */
     int original;                   /* Original priority before donation. */
-
+    
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     struct process *process;        /* Process of this thread. */
 #endif
-
     /* Owned by thread.c. */
     unsigned magic;                 /* Detects stack overflow. */
   };

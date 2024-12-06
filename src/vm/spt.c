@@ -11,6 +11,7 @@ struct spte *
 spt_make_entry (void *uaddr, int size)
 {
   ASSERT (size <= PGSIZE);
+  ASSERT (size <= PGSIZE);
   ASSERT (pg_round_down (uaddr) == uaddr);
 
   struct spte *entry = (struct spte *) malloc (sizeof (struct spte));

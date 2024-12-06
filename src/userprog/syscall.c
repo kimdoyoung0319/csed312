@@ -68,6 +68,7 @@ static void
 syscall_handler (struct intr_frame *f) 
 {
   int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
+  thread_current ()->process->uesp = f->esp;
 
   switch (syscall_number) {
     case SYS_HALT: halt (); break; 

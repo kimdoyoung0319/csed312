@@ -242,6 +242,7 @@ make_process (struct process *par, struct thread *t)
   sema_init (&this->sema, 0);
   this->thread = t;
   this->waited = false;
+  this->uesp = NULL;
   list_init (&this->children);
   list_init (&this->opened);
   list_init (&this->mappings);
@@ -326,6 +327,7 @@ process_exit (int status)
 {
   struct file *fp;
   struct list_elem *e, *next;
+  struct hash_elem *h;
   struct thread *cur = thread_current ();
   struct process *child, *this = cur->process;
 
@@ -366,6 +368,9 @@ process_exit (int status)
       file_close (fp);
       e = next;
     }
+
+  /* clean frame table, sp table and swap entries with process aspective */
+  hash_destroy (&this->spt, spt_free_hash);
 
   printf ("%s: exit(%d)\n", this->name, status);
 
@@ -669,8 +674,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = ft_get_frame ();
-      if (kpage == NULL)
+      struct process *this = thread_current ()->process;
+      if (this == NULL)
         return false;
 
       struct process *this = thread_current ()->process;
@@ -691,6 +696,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+      ofs += page_read_bytes;
     }
   return true;
 }
@@ -701,12 +707,13 @@ static bool
 setup_stack (void **esp) 
 {
   uint8_t *kpage;
+  uint8_t *upage = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
 
-  kpage = ft_get_frame ();
+  kpage = ft_get_frame (upage);
   if (kpage != NULL) 
     {
-      success = process_install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      success = process_install_page (upage, kpage, true);
       if (success)
         {
           *esp = PHYS_BASE;

@@ -5,9 +5,12 @@
 #include <lib/user/syscall.h>
 #include <lib/stdbool.h>
 #include "userprog/pagedir.h"
+#include "userprog/pagedir.h"
 #include "devices/block.h"
 #include "vm/frame.h"
+#include "vm/frame.h"
 
+typedef int32_t off_t;
 typedef int32_t off_t;
 /* Supplemental page table element that represents a page that is either 
    swapped out of not loaded. */

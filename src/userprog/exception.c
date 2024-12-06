@@ -17,6 +17,10 @@ static long long page_fault_cnt;
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
 
+/* Lock to ensure consistency of the file system. Definition can be found in
+   userprog/syscall.c. */
+extern struct lock filesys_lock;
+
 /* Registers handlers for interrupts that can be caused by user
    programs.
 
@@ -174,14 +178,14 @@ page_fault (struct intr_frame *f)
       if (not_present && growthable)
         {
           /* frame table 에 추가하기 */
-          void *kpage = ft_get_frame ();
+          void *kpage = ft_get_frame (upage);
           if (kpage == NULL)
             {
               process_exit (-1);
             }
 
           /* spt 엔트리 생성하여 할당하기 */
-          entry = spt_make_entry (upage, PGSIZE);
+          entry = spt_make_entry (upage, PGSIZE, BLOCK_FAILED);
           if (entry == NULL)
             {
               ft_free_frame (kpage);
