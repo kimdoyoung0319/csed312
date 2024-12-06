@@ -221,12 +221,8 @@ page_fault (struct intr_frame *f)
             process_exit (-1);
           
           /* Load this page. */
-          lock_acquire (&filesys_lock);
           file_seek (entry->file, entry->ofs);
-          bool chk = file_read (entry->file, kpage, entry->size) == (int) entry->size;
-          lock_release (&filesys_lock);
-
-          if (chk)
+          if (file_read (entry->file, kpage, entry->size) == (int) entry->size)
             {
               ft_free_frame (kpage);
               process_exit (-1);
@@ -264,13 +260,21 @@ page_fault (struct intr_frame *f)
           entry->swapped = false;
           entry->index = BLOCK_FAILED;
         }
-      /* file memory mapped */
-      else if (entry->mapid != BLOCK_FAILED)
+      /* Memory-mapped file. */
+      else if (entry->mapid != MAP_FAILED)
         {
-          process_exit (-1);
-          /* 메모리 매핑은 되었지만 아직 로딩되지 않은 경우 */
-          /* 대응되는 mmap 을 참고하여 (이전에 생성해줘야 함) */
-          /* memory mapped 된 uaddr과 map id 를 기반으로 block_read 수행 */
+          uint8_t *uaddr = entry->uaddr;
+          int offset = (int) (upage - uaddr);
+          int read_bytes = entry->size - offset < PGSIZE 
+                           ? entry->size - offset 
+                           : PGSIZE;
+
+          void *kpage = ft_get_frame (upage);
+          if (kpage == NULL)
+            process_exit (-1);
+
+          file_read (entry->file, kpage, read_bytes);
+          entry->swapped = false;
         }
       /* error */
       else

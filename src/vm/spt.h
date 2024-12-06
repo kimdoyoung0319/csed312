@@ -20,7 +20,7 @@ struct spte
     void *uaddr;             /* The starting address of this page. */
     mapid_t mapid;           /* Map identifier for memory-mapped files. */
     struct file *file;
-    int index;
+    block_sector_t index;
     bool lazy;
     off_t ofs;
     struct hash_elem elem;   /* Hash element for SPT. */
