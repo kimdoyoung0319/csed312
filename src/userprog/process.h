@@ -30,11 +30,17 @@ struct process
     struct list children;         /* List of child processes. */
     struct list_elem elem;        /* List element. */
 
+    /* Owned by syscall.c. */
+    struct list mappings;         /* File-memory mappings. */
+
     /* Shared between filesys/file.c and process.c.*/
     struct list opened;           /* List of opened files. */
 
     /* Shared between vm/spt.c and exceptions.c. */
-    struct hash spt;
+    struct hash spt;              /* Supplemental page table. */
+
+    /* Using for stack pointer when page fault while handling systemcalls */
+    void *uesp;
   };
 
 void process_init (void);

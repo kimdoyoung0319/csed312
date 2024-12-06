@@ -9,11 +9,26 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "userprog/process.h"
+#include "userprog/mapid_t.h"
+#include "vm/spt.h"
 
 #define WORD_SIZE (sizeof (intptr_t))
 
 /* Lock to ensure consistency of the file system. */
 struct lock filesys_lock;
+
+/* Lock used by allocate_mapid(). */
+struct lock mapid_lock;
+
+/* An file-memory mapping. */
+struct mapping
+  {
+    void *uaddr;                /* Starting user address. */
+    int size;                   /* Size of the mapped file. */
+    mapid_t mapid;              /* Mapping identifier. */
+    struct file *fp;            /* File for this mapping. */
+    struct list_elem elem;      /* List element. */
+  };
 
 static void syscall_handler (struct intr_frame *);
 static uint32_t dereference (const void *, int, int);
@@ -23,6 +38,9 @@ static bool verify_read (char *, int);
 static bool verify_write (char *, int);
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
+static mapid_t allocate_mapid (void);
+static struct mapping *retrieve_mapping (mapid_t);
+static bool is_valid_mapping (void *, struct file *);
 
 static void halt (void);
 static void exit (void *);
@@ -43,6 +61,7 @@ syscall_init (void)
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   lock_init (&filesys_lock);
+  lock_init (&mapid_lock);
 }
 
 static void
@@ -64,6 +83,8 @@ syscall_handler (struct intr_frame *f)
     case SYS_SEEK: seek (f->esp); break;   
     case SYS_TELL: f->eax = tell (f->esp); break;   
     case SYS_CLOSE: close (f->esp); break;
+    case SYS_MMAP: f->eax = mmap (f->esp); break;
+    case SYS_MUNMAP: mummap (f->esp); break;
   }
 }
 
@@ -181,6 +202,93 @@ put_user (uint8_t *udst, uint8_t byte)
   asm ("movl $1f, %0; movb %b2, %1; 1:"
        : "=&a" (error_code), "=m" (*udst) : "q" (byte));
   return error_code != -1;
+}
+
+/* Allocates new mapping identifier. */
+static mapid_t
+allocate_mapid (void)
+{
+  static mapid_t next_mapid = 2;
+  mapid_t mapid;
+
+  lock_acquire (&mapid_lock);
+  mapid = next_mapid++;
+  lock_release (&mapid_lock);
+
+  return mapid;
+}
+
+/* Returns fresh file descriptor to represent a newly opened file. */
+static int
+allocate_fd (void)
+{
+  /* File descriptor of 0 and 1 are reserved for stdin and stdout. */
+  static int next_fd = 2;
+  int fd;
+
+  lock_acquire (&fd_lock);
+  fd = next_fd++;
+  lock_release (&fd_lock);
+
+  return fd;
+}
+
+/* Checks if a file-memory mapping for file FP, starting from UADDR is valid
+   or not. */
+static bool
+is_valid_mapping (void *uaddr_, struct file *fp)
+{
+  int length;
+  struct list_elem *e;
+  struct process *this = thread_current ();
+  uint8_t *uaddr = uaddr_;
+
+  ASSERT (this != NULL);
+
+  /* Checks if the given file pointer is a null pointer, if the length of the
+     file is zero, or UADDR is not page aligned. */
+  if (fp == NULL || file_length (fp) == 0 || pg_ofs (uaddr) != 0)
+    return false;
+
+  length = file_length (fp);
+
+  /* Checks if there exists any overlapping mapping within current process's
+     context. */
+  for (e = list_begin (&this->mappings); e != list_end (&this->mappings);
+       e = list_next (e))
+    {
+      struct mapping *mapping = list_entry (e, struct mapping, elem);
+      uint8_t *base = mapping->uaddr;
+      int size = mapping->size;
+
+      if (base <= uaddr && uaddr < base + size 
+          || uaddr <= base && base < uaddr + length)
+        return false;
+    }
+
+  return true;
+}
+
+/* Retrieves pointer to the mapping corresponds to MAPID within current 
+   process's context. Returns NULL if given mapping is not found. */
+static struct mapping *
+retrieve_mapping (mapid_t mapid)
+{
+  struct list_elem *e;
+  struct procsess *this = thread_current ()->process;
+
+  ASSERT (this != NULL)
+
+  for (e = list_begin (&this->mapping); e != list_end (&this->mappings);
+       e = list_next (e))
+    {
+      struct mapping *mapping = list_entry (e, struct mapping, elem);
+
+      if (mapping->mapid == mapid)
+        return mapping;
+    }
+  
+  return NULL;
 }
 
 /* System call handler for halt(). */
@@ -372,5 +480,84 @@ close (void *esp)
   file_close (fp);
 }
 
-/* TODO : modify -> read(buffer check) & write (buffer check) (can writable ? and check VM entry) */
-/* TODO : add -> add file memory mapping syscall & unmapping syscall */
+/* System call handler for mmap(). */
+static uint32_t
+mmap (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  void *addr = (void *) dereference (esp, 2, WORD_SIZE);
+
+  struct file *fp = retrieve_fp (fd);
+  struct process *this = thread_current ()->process;
+
+  int pages, remaining;
+  struct mapping *mapping;
+  mapid_t mapid;
+
+  ASSERT(this != NULL);
+
+  if (!is_valid_mapping (addr, fp))
+    return MAPID_ERROR;
+
+  fp = file_reopen (fp);
+  mapid = allocate_mapid ();
+
+  mapping = (struct mapping *) malloc (sizeof (struct mapping));
+  mapping->size = file_length (fp);
+  mapping->uaddr = addr;
+  mapping->mapid = mapid;
+  mapping->fp = fp;
+  list_push_back (&this->mappings, mapping);
+
+  remaining = file_length (fp);
+  pages = file_length (fp) / PGSIZE + 1;
+
+  for (int i = 0; i < pages; i++)
+    {
+      int size = remaining < PGSIZE ? remaining : PGSIZE;
+      uint8_t *uaddr = (uint8_t *) addr + i * PGSIZE;
+      struct spte *entry = spt_make_entry (uaddr, size);
+
+      entry->file = fp;
+      entry->ofs = file_length (fp) - remaining;
+      entry->mapid = mapid;
+
+      hash_insert (&this->spt, &entry->elem);
+
+      remaining -= size;
+    }
+
+  return mapid;
+}
+
+/* System call handler for mummap(). */
+static void
+munmap (void *esp)
+{
+  mapid_t mapid = (mapid_t) dereference (esp, 1, WORD_SIZE);
+  struct process *this = thread_current ()->process;
+  struct mapping *mapping = retrieve_mapping (mapid);
+  int pages = mapping->size / PGSIZE;
+  uint8_t *base = mapping->uaddr;
+
+  if (mapping == NULL)
+    return;
+
+  for (int i = 0; i < pages; i++)
+    {
+      struct spte *entry = spt_lookup (base + i * PGSIZE);
+      int offset = i * PGSIZE;
+      int write_bytes = 
+        mapping->size - offset > PGSIZE ? PGSIZE : mapping->size - offset;
+
+      if (entry == NULL)
+        continue;
+
+      if (pagedir_is_dirty (&this->pagedir, entry->uaddr))
+        file_write (mapping->fp, base + offset, write_bytes);
+
+      hash_delete (&this->spt, &entry->elem);
+    }
+
+  file_close (mapping->fp);
+}

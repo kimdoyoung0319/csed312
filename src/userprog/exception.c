@@ -154,45 +154,124 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* If it is caused by invalid address passed to the kernel, kill user process
-     while making no harm to the kernel. */
-  if (is_user_vaddr (fault_addr) && !user)
-    process_exit (-1);
-
-  /* TODO: Is this assertion valid? i.e. Is there any possibility that a kernel 
-           thread invokes page fault and reaching here? */
-  ASSERT (thread_current ()->process != NULL);
-
   uint8_t *upage = pg_round_down (fault_addr);
   struct spte *entry = spt_lookup (upage);
+  struct process *tmp = thread_current ()->process;
+  uint8_t *uesp = user ? f->esp : tmp->uesp;
 
-  if (entry == NULL || !entry->writable && write || !not_present)
-    kill (f);
+  bool growthable = uesp != NULL 
+                    && (uint8_t *)uesp - 32 <= fault_addr 
+                    && is_user_vaddr (fault_addr) 
+                    && is_user_limit (fault_addr) ? true : false;
 
-  block_sector_t read_sector = entry->index;
-  bool writable = entry->writable;
-  enum block_type block_type = entry->swapped ? BLOCK_SWAP : BLOCK_FILESYS;
-  struct block *block_to_read = block_get_role (block_type);
+  // printf ("\n not_present : %d ", not_present);
+  // printf ("\n write : %d ", write);
+  // printf ("\n growthable : %d \n", growthable);
 
-  size_t page_read_bytes = entry->size;
-  size_t page_zero_bytes = PGSIZE - entry->size;
-
-  uint8_t *kpage = ft_get_frame ();
-
-  /* According to the implementation of ft_get_frame(), the return value 
-     must not be NULL. However, I added this to ensure completeness for 
-     this routine. Delete this if it passes the test set without this 
-     statements. */
-  if (kpage == NULL)
-    kill (f);
-
-  for (int i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
-    block_read (block_to_read, read_sector + i, kpage + i * BLOCK_SECTOR_SIZE);
-  memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-  if (!process_install_page (upage, kpage, writable))
+  if (entry == NULL)
     {
-      ft_free_frame (kpage);
-      kill (f);
+      /* 정상적인 stack growth 상황 */
+      if (not_present && growthable)
+        {
+          /* frame table 에 추가하기 */
+          void *kpage = ft_get_frame ();
+          if (kpage == NULL)
+            {
+              process_exit (-1);
+            }
+
+          /* spt 엔트리 생성하여 할당하기 */
+          entry = spt_make_entry (upage, PGSIZE);
+          if (entry == NULL)
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+
+          /* spt 에 spte 추가하기 */
+          entry->swapped = false;
+          entry->writable = true;
+          hash_insert (&thread_current ()->process->spt, &entry->elem);
+          if (!process_install_page (upage, kpage, true))
+            {
+
+              ft_free_frame (kpage);
+              spt_free_entry (entry);
+              process_exit (-1);
+            }
+        }
+
+      /* 잘못된 상황 */
+      else
+        {
+          process_exit (-1);
+        }
     }
+  else /* Lazy Loading or Swap in or File Memory Mapped??*/
+    {      
+      /* Lazy Loading 인 경우 */
+      if (entry->lazy)
+        {
+          uint8_t *kpage = ft_get_frame (entry->uaddr);
+          if (kpage == NULL)
+            process_exit (-1);
+          
+          /* Load this page. */
+          lock_acquire (&filesys_lock);
+          file_seek (entry->file, entry->ofs);
+          bool chk = file_read (entry->file, kpage, entry->size) == (int) entry->size;
+          lock_release (&filesys_lock);
+
+          if (chk)
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+
+          /* Add the page to the process's address space. */
+          if (!process_install_page (entry->uaddr, kpage, entry->writable)) 
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+          
+          entry->lazy = false;
+        }
+      /* swap in 하는 경우 */
+      else if (entry->index != BLOCK_FAILED 
+              && entry->swapped)
+        {
+          void *kpage = ft_get_frame (upage); 
+          if (kpage == NULL)
+            process_exit (-1);
+
+          if (!process_install_page (upage, kpage, true))
+            {
+              ft_free_frame (kpage);
+              process_exit (-1);
+            }
+
+          block_sector_t size = 0;
+          for (size = 0; size < PGSIZE / BLOCK_SECTOR_SIZE;)
+            block_read (block_get_role (BLOCK_SWAP), 
+                        entry->index + size, 
+                        kpage + (size++ * BLOCK_SECTOR_SIZE));
+          st_in (entry->index / (PGSIZE / BLOCK_SECTOR_SIZE));
+          entry->swapped = false;
+          entry->index = BLOCK_FAILED;
+        }
+      /* file memory mapped */
+      else if (entry->mapid != BLOCK_FAILED)
+        {
+          process_exit (-1);
+          /* 메모리 매핑은 되었지만 아직 로딩되지 않은 경우 */
+          /* 대응되는 mmap 을 참고하여 (이전에 생성해줘야 함) */
+          /* memory mapped 된 uaddr과 map id 를 기반으로 block_read 수행 */
+        }
+      /* error */
+      else
+        {
+          process_exit (-1);
+        }
+    } 
 }

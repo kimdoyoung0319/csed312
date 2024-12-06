@@ -244,6 +244,7 @@ make_process (struct process *par, struct thread *t)
   this->waited = false;
   list_init (&this->children);
   list_init (&this->opened);
+  list_init (&this->mappings);
   hash_init (&this->spt, spt_hash, spt_less_func, NULL);
   t->process = this;
 
@@ -672,20 +673,19 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (kpage == NULL)
         return false;
 
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!process_install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      struct process *this = thread_current ()->process;
+      struct spte *entry = spt_make_entry (upage, PGSIZE);
+      if (entry == NULL)
+        return false;
+      
+      entry->size = page_read_bytes;
+      entry->swapped = false;
+      entry->writable = writable;
+      entry->file = file;
+      entry->uaddr = upage;
+      entry->lazy = true;
+      entry->ofs = ofs;
+      hash_insert (&this->spt, &entry->elem);
 
       /* Advance. */
       read_bytes -= page_read_bytes;
@@ -708,7 +708,15 @@ setup_stack (void **esp)
     {
       success = process_install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        {
+          *esp = PHYS_BASE;
+          struct spte *spte = spt_make_entry (PHYS_BASE, PGSIZE);
+          spte->swapped = false;
+          spte->writable = true;
+          
+          struct process *this = thread_current ()->process;
+          hash_insert (&this->spt, &spte->elem);
+        }
       else
         palloc_free_page (kpage);
     }

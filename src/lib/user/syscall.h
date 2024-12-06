@@ -4,10 +4,7 @@
 #include <stdbool.h>
 #include <debug.h>
 #include "userprog/pid.h"
-
-/* Map region identifier. */
-typedef int mapid_t;
-#define MAP_FAILED ((mapid_t) -1)
+#include "userprog/mapid_t.h"
 
 /* Maximum characters in a filename written by readdir(). */
 #define READDIR_MAX_LEN 14

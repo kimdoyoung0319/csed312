@@ -1,34 +1,59 @@
-#include <lib/user/syscall.h>
 #include <hash.h>
 #include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/mapid_t.h"
 #include "vm/spt.h"
 
 /* Makes basic SPTE which is from UADDR, refer to a disk sector INDEX, with 
    size of SIZE. */
 struct spte *
-spt_make_entry (void *uaddr, int size, block_sector_t index)
+spt_make_entry (void *uaddr, int size)
 {
-  ASSERT (size < PGSIZE);
+  ASSERT (size <= PGSIZE);
   ASSERT (pg_round_down (uaddr) == uaddr);
 
-  struct spte *new = (struct spte *) malloc (sizeof (struct spte));
+  struct spte *entry = (struct spte *) malloc (sizeof (struct spte));
 
-  new->size = size;
-  new->swapped = true;
-  new->uaddr = uaddr;
-  new->mapid = MAP_FAILED;
-  new->index = index;
+  if (entry == NULL)
+    return NULL;
 
-  return new;
+  entry->size = size;
+  entry->swapped = true;
+  entry->uaddr = uaddr;
+  entry->mapid = MAPID_ERROR;
+  entry->file = NULL;
+  entry->lazy = false;
+  entry->ofs = 0;
+
+  return entry;
 }
 
 /* Frees allocated space for SPTE. */
 void
-spt_free_entry (struct spte *spte)
+spt_free_entry (struct spte *entry)
 {
-  free (spte);
+  free (entry);
+}
+
+void
+spt_free_hash (struct hash_elem *h, void *aux UNUSED)
+{
+  struct spte *e = hash_entry (h, struct spte, elem);
+  if (e->swapped == false && e->lazy == false)
+    {
+      void *kaddr = pagedir_get_page (thread_current ()->process->pagedir, e->uaddr);
+
+      if (kaddr != NULL)
+        ft_free_frame (kaddr);
+    }
+
+  else if (e->swapped == true && e->index != BLOCK_FAILED)
+    {
+      st_in (e->index / (PGSIZE / BLOCK_SECTOR_SIZE));
+    }
+  
+  free (e);
 }
 
 /* Finds SPTE with user address UADDR, under the current process's context. 
