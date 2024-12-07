@@ -272,12 +272,6 @@ destroy_process (struct process *p)
     return;
 
   uint32_t *pd = p->pagedir;
-  struct pagerec *pr = p->pagerec;
-
-  /* Destroys page record. The ordering is important here since destroying 
-     page records involves accessing the page directory. */
-  if (pr != NULL)
-    pagerec_destroy (pr);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory when the destroyed process is current
@@ -340,6 +334,9 @@ process_exit (int status)
   ASSERT (!(this->waited && par->process == NULL));
 
   this->status = status;
+
+  /* Destroys page record. */
+  pagerec_destroy (this->pagerec);
 
   /* This is to maintain consistency of process structures. Interrupt will be 
      enabled after thread_exit() call which causes context switch. */
@@ -685,8 +682,8 @@ setup_stack (void **esp)
   uint8_t *kaddr, *stack_base = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
   struct page *upage = page_from_memory (stack_base, this->pagedir);
-
   kaddr = frame_allocate (upage, true);
+
   if (kaddr != NULL) 
     {
       pagerec_set_page (this->pagerec, upage);

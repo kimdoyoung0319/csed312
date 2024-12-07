@@ -156,12 +156,12 @@ page_fault (struct intr_frame *f)
   /* If it is caused by invalid address passed to the kernel, kill user process
      while making no harm to the kernel. */
   if (is_user_vaddr (fault_addr) && !user)
-    kill (f);
+    process_exit (-1);
 
   struct process *this = thread_current ()->process; 
 
   /* TODO: Modify this to handle the situation where the kernel raises page 
-           fault.*/
+           fault. */
   /* TODO: Modify this to detect stack growth situation. */
   /* TODO: Modify this to do sanity checking. */
   if (this == NULL)

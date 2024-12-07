@@ -22,8 +22,6 @@ struct frame
     struct list_elem elem;
   };
 
-static void *evict (struct frame *);
-
 /* Initialize global frame table. */
 void
 frame_init (void)
@@ -90,15 +88,16 @@ frame_allocate (struct page *page, bool is_zero)
       else
         e = list_next (e);
     }
+  lock_release (&frames_lock);
 
-  /* At this point, there's at least one free frame. Reset frame informations 
-     and re-insert it into frame table. */
-  palloc_free_page(evict (frame));
+  page_swap_out (frame->page);
+  palloc_free_page (frame->kaddr);
+
+  /* At this point, there's at least one free frame. Reset frame 
+     informations. */
   frame->kaddr = palloc_get_page (PAL_USER);
   frame->page = page;
   frame->accessed = false;
-  list_push_back (&frames, &frame->elem);
-  lock_release (&frames_lock);
 
   return frame->kaddr;
 }
@@ -111,6 +110,7 @@ frame_free (void *kaddr)
   struct list_elem *e;
   struct frame *frame = NULL;
 
+  lock_acquire (&frames_lock);
   for (e = list_begin (&frames); e != list_end (&frames); e = list_next (e))
     {
       frame = list_entry (e, struct frame, elem);
@@ -122,23 +122,9 @@ frame_free (void *kaddr)
   if (frame == NULL || frame->kaddr != kaddr)
     return;
   
-  palloc_free_page(evict (frame));
-  free (frame);
-}
-
-/* Evicts FRAME from frame table, marks associated user page as not present 
-   from its page directory. Returns the kernel address of the frame to be 
-   free'd after all these task. Notice that this does not free the struct frame
-   itself. You can use it freely again with new kernel virtual address. */
-/* TODO: Modify this to use page_swap_out(). */
-static void *
-evict (struct frame *frame)
-{
-  struct page *page = frame->page;
-  uint32_t *pagedir = page->pagedir;
-
-  pagedir_clear_page (pagedir, page->uaddr);
   list_remove (&frame->elem);
+  lock_release (&frames_lock);
 
-  return frame->kaddr;
+  palloc_free_page (frame->kaddr);
+  free (frame);
 }
