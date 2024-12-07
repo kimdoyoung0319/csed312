@@ -682,7 +682,7 @@ setup_stack (void **esp)
   uint8_t *kaddr, *stack_base = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
   struct page *upage = page_from_memory (stack_base, this->pagedir);
-  kaddr = frame_allocate (upage, true);
+  kaddr = frame_allocate (upage);
 
   if (kaddr != NULL) 
     {

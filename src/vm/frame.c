@@ -31,15 +31,14 @@ frame_init (void)
 }
 
 /* Allocates a frame from user pool associated with PAGE, evicting one if 
-   needed. New frame will be filled with zeros if is_zero flag is set. */
+   needed. New frame will be filled with zeros. */
 void *
-frame_allocate (struct page *page, bool is_zero)
+frame_allocate (struct page *page)
 {
   ASSERT (page != NULL);
 
   struct frame *frame;
-  void *kaddr = is_zero ? palloc_get_page (PAL_USER | PAL_ZERO) 
-                        : palloc_get_page (PAL_USER);
+  void *kaddr = palloc_get_page (PAL_USER | PAL_ZERO); 
 
   /* Luckily, there's room for a new frame. Set basic informations and 
      register it to the frame table. */
