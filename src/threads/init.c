@@ -39,6 +39,7 @@
 #endif
 #ifdef VM
 #include "vm/frame.h"
+#include "vm/swap.h"
 #endif
 
 /* Page directory with kernel mappings only. */
@@ -137,9 +138,9 @@ main (void)
 
 #ifdef VM
   frame_init ();
+  swap_init ();
 #endif
 
-  frame_init ();
   printf ("Boot complete.\n");
   
   /* Run actions specified on kernel command line. */

@@ -272,6 +272,12 @@ destroy_process (struct process *p)
     return;
 
   uint32_t *pd = p->pagedir;
+  struct pagerec *pr = p->pagerec;
+
+  /* Destroys page record. The ordering is important here since destroying 
+     page records involves accessing the page directory. */
+  if (pr != NULL)
+    pagerec_destroy (pr);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory when the destroyed process is current
@@ -647,14 +653,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *uaddr,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Make a page to be inserted to the page record. */
-      struct page *upage = page_from_file (uaddr, this->pagedir, file, ofs);
+      struct page *upage = page_from_file (uaddr, false, file, ofs);
 
       /* TODO: Shouldn't we clean all the pages allocated? */
       if (upage == NULL)
         return false;
 
       /* Register this page onto current process's page record. */
-      pagerec_set_page (&this->pagerec, upage);
+      pagerec_set_page (this->pagerec, upage);
 
       /* Advance. */
       read_bytes -= page_read_bytes;
@@ -675,15 +681,15 @@ setup_stack (void **esp)
 
   ASSERT (this != NULL);
 
-  uint8_t *kaddr;
+  uint8_t *kaddr, *stack_base = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
-  struct page *upage = page_from_memory (PHYS_BASE, this->pagedir);
+  struct page *upage = page_from_memory (stack_base, this->pagedir);
 
   kaddr = frame_allocate (upage, true);
   if (kaddr != NULL) 
     {
-      pagerec_set_page (&this->pagerec, upage);
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kaddr, true);
+      pagerec_set_page (this->pagerec, upage);
+      success = install_page (stack_base, kaddr, true);
       if (success)
         *esp = PHYS_BASE;
       else

@@ -1,6 +1,7 @@
 #include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include "devices/block.h"
 #include "userprog/gdt.h"
 #include "userprog/process.h"
 #include "threads/interrupt.h"
@@ -92,6 +93,7 @@ kill (struct intr_frame *f)
               thread_name (), f->vec_no, intr_name (f->vec_no));
       intr_dump_frame (f);
       process_exit (-1);
+      NOT_REACHED ();
 
     case SEL_KCSEG:
       /* Kernel's code segment, which indicates a kernel bug.
@@ -153,15 +155,22 @@ page_fault (struct intr_frame *f)
   /* If it is caused by invalid address passed to the kernel, kill user process
      while making no harm to the kernel. */
   if (is_user_vaddr (fault_addr) && !user)
-    process_exit (-1);
+    kill (f);
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
-  kill (f);
+  struct process *this = thread_current ()->process; 
+
+  /* TODO: Modify this to handle the situation where the kernel raises page 
+           fault.*/
+  /* TODO: Modify this to detect stack growth situation. */
+  /* TODO: Modify this to do sanity checking. */
+  if (this == NULL)
+    kill (f);
+
+  void *uaddr = pg_round_down (fault_addr);
+  struct page *upage = pagerec_get_page (this->pagerec, uaddr);
+
+  if (upage == NULL || upage->state == PAGE_LOADED)
+    kill (f);
+
+  page_swap_in (upage);
 }

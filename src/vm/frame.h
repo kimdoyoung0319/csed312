@@ -8,4 +8,4 @@ void frame_init (void);
 void *frame_allocate (struct page *, bool);
 void frame_free (void *);
 
-#endif /* vm/frame.h. */
+#endif /* vm/frame.h */

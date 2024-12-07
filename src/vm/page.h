@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <hash.h>
 #include "devices/block.h"
+#include "filesys/file.h"
 #include "filesys/off_t.h"
 
 /* Page records. */
@@ -13,9 +14,10 @@ struct pagerec;
 /* States of a page. */
 enum page_state
   {
-    PAGE_LOADED,
-    PAGE_SWAPPED,
-    PAGE_UNLOADED
+    PAGE_PRESENT,     /* In memory, backing device is swap block. */
+    PAGE_SWAPPED,     /* In swap block device. */
+    PAGE_LOADED,      /* In memory, backing device is file system block. */
+    PAGE_UNLOADED,    /* In file system block device. */
   };
 
 /* A virtual page. */
@@ -42,16 +44,15 @@ void pagerec_clear_page (struct pagerec *, struct page *);
 /* Basic operations on pages. */
 struct page *page_from_memory (void *, bool);
 struct page *page_from_file (void *, bool, struct file *, off_t);
-struct page *page_from_swap (void);
+struct page *page_from_swap (void *, bool, block_sector_t);
 void page_destroy (struct page *);
 
 /* Modifications on pages. */
-void page_set_present (struct page *, bool);
-void page_swap_out (struct page *);
 void *page_swap_in (struct page *);
+void page_swap_out (struct page *);
 
-/* States of a page, stored in page directory. */
+/* States of a page, stored in the page directory. */
 bool page_is_accessed (struct page *);
 bool page_is_dirty (struct page *);
 
-#endif /* vm/page.h. */
+#endif /* vm/page.h */

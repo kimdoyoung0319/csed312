@@ -50,7 +50,8 @@ syscall_handler (struct intr_frame *f)
 {
   int syscall_number = (int) dereference (f->esp, 0, WORD_SIZE);
 
-  switch (syscall_number) {
+  switch (syscall_number) 
+    {
     case SYS_HALT: halt (); break; 
     case SYS_EXIT: exit (f->esp); break;   
     case SYS_EXEC: f->eax = exec (f->esp); break;
@@ -64,7 +65,7 @@ syscall_handler (struct intr_frame *f)
     case SYS_SEEK: seek (f->esp); break;   
     case SYS_TELL: f->eax = tell (f->esp); break;   
     case SYS_CLOSE: close (f->esp); break;
-  }
+    }
 }
 
 /* Dereferences pointer BASE + INDEX * OFFSET, with a validity test. Returns
