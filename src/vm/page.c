@@ -117,19 +117,18 @@ page_from_memory (void *uaddr, bool writable)
 }
 
 /* Makes a new page from a file, which will demand paged from FILE, starting 
-   from OFFSET, with WRITABLE flag.
+   from OFFSET, with WRITABLE flag and SIZE within the page.
 
-   The size of new page will be automatically set to PGSIZE if the remaining
-   size from OFFSET to the length of FILE is greater than PGSIZE. Else, the size
-   will be set to the remaining bytes of the file. The page directory of the 
-   page will be automatically set to current process's page directory.    
+   The page directory of the page will be automatically set to current
+   process's page directory.    
 
    Returns a null pointer if it failed to allocate memory. UADDR must be page
    aligned. FILE must not be a null pointer and OFFSET must be less than the 
-   length of FILE. If OFFSET is not sector aligned, it automatically truncates
-   it to nearest sector boundary. */ 
+   length of FILE. OFFSET must be sector aligned. SIZE must be less than or 
+   equal to PGSIZE. */ 
 struct page *
-page_from_file (void *uaddr, bool writable, struct file *file, off_t offset)
+page_from_file (void *uaddr, bool writable, struct file *file, 
+                off_t offset, size_t size)
 {
   struct page *page = (struct page *) malloc (sizeof (struct page));
   struct process *this = thread_current ()->process;
@@ -139,6 +138,7 @@ page_from_file (void *uaddr, bool writable, struct file *file, off_t offset)
   ASSERT (file != NULL);
   ASSERT (file_length (file) >= offset);
   ASSERT (offset % BLOCK_SECTOR_SIZE == 0);
+  ASSERT (size <= PGSIZE);
 
   if (page == NULL)
     return NULL;
@@ -147,13 +147,9 @@ page_from_file (void *uaddr, bool writable, struct file *file, off_t offset)
   page->uaddr = uaddr;
   page->pagedir = this->pagedir;
   page->writable = writable;
-
-  page->sector = inode_get_sector (file_get_inode (file)) 
-                 + offset / BLOCK_SECTOR_SIZE;
-
-  page->size = file_length (file) - offset > PGSIZE 
-               ? PGSIZE 
-               : file_length (file) - offset;
+  page->size = size;
+  page->sector = 
+    inode_get_sector (file_get_inode (file)) + offset / BLOCK_SECTOR_SIZE;
 
   return page;
 }
@@ -243,7 +239,7 @@ page_swap_in (struct page *page)
 
   /* Actually fetch the page from the block device. */
   for (block_sector_t sector = page->sector; 
-       sector < PGSIZE / BLOCK_SECTOR_SIZE;
+       sector < page->sector + PGSIZE / BLOCK_SECTOR_SIZE;
        sector++)
     {
       if (page->size - offset >= BLOCK_SECTOR_SIZE)

@@ -43,7 +43,7 @@ void pagerec_clear_page (struct pagerec *, struct page *);
 
 /* Basic operations on pages. */
 struct page *page_from_memory (void *, bool);
-struct page *page_from_file (void *, bool, struct file *, off_t);
+struct page *page_from_file (void *, bool, struct file *, off_t, size_t);
 struct page *page_from_swap (void *, bool, block_sector_t);
 void page_destroy (struct page *);
 

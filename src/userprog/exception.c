@@ -4,6 +4,7 @@
 #include "devices/block.h"
 #include "userprog/gdt.h"
 #include "userprog/process.h"
+#include "userprog/pagedir.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -169,7 +170,9 @@ page_fault (struct intr_frame *f)
   void *uaddr = pg_round_down (fault_addr);
   struct page *upage = pagerec_get_page (this->pagerec, uaddr);
 
-  if (upage == NULL || upage->state == PAGE_LOADED)
+  if (upage == NULL 
+      || upage->state == PAGE_LOADED 
+      || upage->state == PAGE_PRESENT)
     kill (f);
 
   page_swap_in (upage);

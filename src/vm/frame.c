@@ -33,8 +33,7 @@ frame_init (void)
 }
 
 /* Allocates a frame from user pool associated with PAGE, evicting one if 
-   needed. New frame will be filled with zeros if is_zero flag is set. The
-   newly made frame will be installed into page directory of PAGE. */
+   needed. New frame will be filled with zeros if is_zero flag is set. */
 void *
 frame_allocate (struct page *page, bool is_zero)
 {
@@ -56,8 +55,6 @@ frame_allocate (struct page *page, bool is_zero)
       lock_acquire (&frames_lock);
       list_push_back (&frames, &frame->elem);
       lock_release (&frames_lock);
-
-      pagedir_set_page (page->pagedir, page->uaddr, kaddr, page->writable);
 
       return kaddr;
     }
@@ -103,8 +100,6 @@ frame_allocate (struct page *page, bool is_zero)
   list_push_back (&frames, &frame->elem);
   lock_release (&frames_lock);
 
-  pagedir_set_page (page->pagedir, page->uaddr, kaddr, page->writable);
-
   return frame->kaddr;
 }
 
@@ -135,7 +130,7 @@ frame_free (void *kaddr)
    from its page directory. Returns the kernel address of the frame to be 
    free'd after all these task. Notice that this does not free the struct frame
    itself. You can use it freely again with new kernel virtual address. */
-/* TODO: Implement swap out. */
+/* TODO: Modify this to use page_swap_out(). */
 static void *
 evict (struct frame *frame)
 {

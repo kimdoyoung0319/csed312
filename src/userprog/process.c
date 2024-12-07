@@ -653,7 +653,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *uaddr,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Make a page to be inserted to the page record. */
-      struct page *upage = page_from_file (uaddr, false, file, ofs);
+      struct page *upage = 
+        page_from_file (uaddr, false, file, ofs, page_read_bytes);
 
       /* TODO: Shouldn't we clean all the pages allocated? */
       if (upage == NULL)
