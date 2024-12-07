@@ -59,14 +59,14 @@ pagerec_set_page (struct pagerec *rec, struct page *page)
     }
 }
 
-/* Retrieves page whose virtual address is UADDR in REC. Returns a null pointer
+/* Retrieves page to which UADDR belongs in REC. Returns a null pointer
    if there's no page with UADDR in the given REC. */
 struct page *
-pagerec_get_page (struct pagerec *rec, void *uaddr)
+pagerec_get_page (struct pagerec *rec, const void *uaddr)
 {
   ASSERT (rec != NULL);
 
-  struct page p = {.uaddr = uaddr};
+  struct page p = {.uaddr = pg_round_down (uaddr)};
   struct hash_elem *e = hash_find (&rec->records, &p.elem);
 
   return e == NULL ? NULL : hash_entry (e, struct page, elem);
@@ -282,7 +282,6 @@ finish:
   return kaddr;
 }
 
-/* TODO: Modify swap out routine for files using offset of page. */
 /* Swap PAGE out from the memory. This function writes the sector number 
    to which the page is swap out into PAGE, so the caller does not need to take 
    care of it. Also, it sets the present bit of the page directory entry 
@@ -325,7 +324,7 @@ page_swap_out (struct page *page)
 
 /* Returns true if this page is accessed. */
 bool
-page_is_accessed (struct page *page)
+page_is_accessed (const struct page *page)
 {
   ASSERT (page != NULL);
 
@@ -334,7 +333,7 @@ page_is_accessed (struct page *page)
 
 /* Returns true if this page is accessed. */
 bool
-page_is_dirty (struct page *page)
+page_is_dirty (const struct page *page)
 {
   ASSERT (page != NULL);
 

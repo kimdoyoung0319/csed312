@@ -1,3 +1,4 @@
+/* TODO: Prevent page faults when some resource is acquired by the kernel. */
 #include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
@@ -11,6 +12,8 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "userprog/process.h"
+#include "userprog/pagedir.h"
+#include "vm/page.h"
 
 #define WORD_SIZE (sizeof (intptr_t))
 

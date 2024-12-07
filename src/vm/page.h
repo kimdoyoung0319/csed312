@@ -39,7 +39,7 @@ void pagerec_destroy (struct pagerec *);
 
 /* Modification and access for page records. */
 void pagerec_set_page (struct pagerec *, struct page *);
-struct page *pagerec_get_page (struct pagerec *, void *);
+struct page *pagerec_get_page (struct pagerec *, const void *);
 void pagerec_clear_page (struct pagerec *, struct page *);
 
 /* Basic operations on pages. */
@@ -53,7 +53,7 @@ void *page_swap_in (struct page *);
 void page_swap_out (struct page *);
 
 /* States of a page, stored in the page directory. */
-bool page_is_accessed (struct page *);
-bool page_is_dirty (struct page *);
+bool page_is_accessed (const struct page *);
+bool page_is_dirty (const struct page *);
 
 #endif /* vm/page.h */
