@@ -23,13 +23,14 @@ enum page_state
 /* A virtual page. */
 struct page 
   {
-    enum page_state state;
-    void *uaddr;
-    uint32_t *pagedir;
-    int size;
-    bool writable;
-    block_sector_t sector;
-    struct hash_elem elem;
+    enum page_state state;     /* State of this page. */
+    void *uaddr;               /* User virtual address of this page. */
+    uint32_t *pagedir;         /* Page directory where this page lies in. */
+    int size;                  /* Size of this page within PGSIZE. */
+    int offset;                /* Offset within a sector in bytes. */
+    bool writable;             /* Is this page writable? */
+    block_sector_t sector;     /* The sector number of underlying block. */
+    struct hash_elem elem;     /* Hash element. */
   };
 
 /* Basic operations on page records. */
