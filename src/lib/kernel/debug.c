@@ -58,7 +58,8 @@ print_stacktrace(struct thread *t, void *aux UNUSED)
   void *retaddr = NULL, **frame = NULL;
   const char *status = "UNKNOWN";
 
-  switch (t->status) {
+  switch (t->status) 
+    {
     case THREAD_RUNNING:  
       status = "RUNNING";
       break;
@@ -73,7 +74,7 @@ print_stacktrace(struct thread *t, void *aux UNUSED)
 
     default:
       break;
-  }
+    }
 
   printf ("Call stack of thread `%s' (status %s):", t->name, status);
 
