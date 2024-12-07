@@ -112,6 +112,7 @@ page_from_memory (void *uaddr, bool writable)
   page->size = PGSIZE;
   page->writable = writable;
   page->sector = 0;
+  page->offset = 0;
 
   return page;
 }
@@ -124,8 +125,7 @@ page_from_memory (void *uaddr, bool writable)
 
    Returns a null pointer if it failed to allocate memory. UADDR must be page
    aligned. FILE must not be a null pointer and OFFSET must be less than the 
-   length of FILE. OFFSET must be sector aligned. SIZE must be less than or 
-   equal to PGSIZE. */ 
+   length of FILE. SIZE must be less than or equal to PGSIZE. */ 
 struct page *
 page_from_file (void *uaddr, bool writable, struct file *file, 
                 off_t offset, size_t size)
@@ -137,7 +137,6 @@ page_from_file (void *uaddr, bool writable, struct file *file,
   ASSERT (pg_ofs (uaddr) == 0);
   ASSERT (file != NULL);
   ASSERT (file_length (file) >= offset);
-  ASSERT (offset % BLOCK_SECTOR_SIZE == 0);
   ASSERT (size <= PGSIZE);
 
   if (page == NULL)
@@ -148,6 +147,7 @@ page_from_file (void *uaddr, bool writable, struct file *file,
   page->pagedir = this->pagedir;
   page->writable = writable;
   page->size = size;
+  page->offset = offset % BLOCK_SECTOR_SIZE;
   page->sector = 
     inode_get_sector (file_get_inode (file)) + offset / BLOCK_SECTOR_SIZE;
 
@@ -164,6 +164,7 @@ page_from_file (void *uaddr, bool writable, struct file *file,
    Returns a null pointer if it failed to allocate memory. UADDR must be page
    aligned. 
 */
+/* TODO: Is this really needed? */
 struct page *
 page_from_swap (void *uaddr, bool writable, block_sector_t sector)
 {
@@ -182,6 +183,7 @@ page_from_swap (void *uaddr, bool writable, block_sector_t sector)
   page->size = PGSIZE;
   page->writable = writable;
   page->sector = sector;
+  page->offset = 0;
 
   return page;
 }
@@ -217,16 +219,15 @@ page_swap_in (struct page *page)
   ASSERT (page != NULL);
   ASSERT (page->state == PAGE_SWAPPED || page->state == PAGE_UNLOADED);
 
-  int offset = 0;
   struct block *block;
-  bool is_zero = (page->size == 0);
-  void *kaddr = frame_allocate (page, is_zero);
+  uint8_t *kpage = (uint8_t *) frame_allocate (page);
+  uint8_t *kaddr = kpage;
+  uint8_t buffer[BLOCK_SECTOR_SIZE * 2];
 
-  if (kaddr == NULL)
+  if (kpage == NULL)
     return NULL;
 
-  /* If the size of actual bytes within the page, fetching is not needed. */
-  if (is_zero)
+  if (page->size == 0)
     goto finish;
 
   /* Determine the block to be fetched according to PAGE's state. */
@@ -242,23 +243,24 @@ page_swap_in (struct page *page)
        sector < page->sector + PGSIZE / BLOCK_SECTOR_SIZE;
        sector++)
     {
-      if (page->size - offset >= BLOCK_SECTOR_SIZE)
-        block_read (block, sector, kaddr + offset);
-      else if (BLOCK_SECTOR_SIZE > page->size - offset 
-               && page->size - offset > 0)
-        {
-          /* If remaining bytes are not page aligned, zero out additionally 
-             fetched bytes in the sector. */
-          int zero_bytes = offset + BLOCK_SECTOR_SIZE - page->size; 
-          uint8_t *zero_addr = (uint8_t *) kaddr + page->size; 
+      if (kaddr >= kpage + page->size)
+        continue;
 
-          block_read (block, sector, kaddr + offset);
+      block_read (block, sector, buffer);
+      block_read (block, sector + 1, buffer + BLOCK_SECTOR_SIZE);
+
+      memcpy (kaddr, buffer + page->offset, BLOCK_SECTOR_SIZE);
+
+      /* If the size of the page is not sector-aligned, zero out additionally
+         fetched bytes. */
+      if (kpage + page->size - BLOCK_SECTOR_SIZE < kaddr)
+        {
+          int zero_bytes = kaddr + BLOCK_SECTOR_SIZE - kpage - page->size;
+          uint8_t *zero_addr = kpage + page->size;
           memset (zero_addr, 0, zero_bytes);
         }
-      else
-        memset (kaddr + offset, 0, BLOCK_SECTOR_SIZE);
 
-      offset += BLOCK_SECTOR_SIZE;
+      kaddr += BLOCK_SECTOR_SIZE;
     }
 
 finish:
@@ -272,10 +274,11 @@ finish:
   else if (page->state == PAGE_UNLOADED)
     page->state = PAGE_LOADED;
 
-  pagedir_set_page (page->pagedir, page->uaddr, kaddr, page->writable);
+  pagedir_set_page (page->pagedir, page->uaddr, kpage, page->writable);
   return kaddr;
 }
 
+/* TODO: Modify swap out routine for files using offset of page. */
 /* Swap PAGE out from the memory. This function writes the sector number 
    to which the page is swap out into PAGE, so the caller does not need to take 
    care of it. Also, it sets the present bit of the page directory entry 
