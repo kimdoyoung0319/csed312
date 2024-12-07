@@ -1,9 +1,11 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
+#include <mapid.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
 #include "filesys/filesys.h"
@@ -12,8 +14,21 @@
 
 #define WORD_SIZE (sizeof (intptr_t))
 
+/* A file-memory mapping. */
+struct mapping
+  {
+    uint8_t *uaddr;          /* Starting user address. */
+    int pages;               /* The number of pages belong to this mapping. */
+    mapid_t mapid;           /* Mapping identifier. */
+    struct file *file;       /* File for this mapping. */
+    struct list_elem elem;   /* List element. */
+  };
+
 /* Lock to ensure consistency of the file system. */
 struct lock filesys_lock;
+
+/* Lock used by allocate_mapid(). */
+static struct lock mapid_lock;
 
 static void syscall_handler (struct intr_frame *);
 static uint32_t dereference (const void *, int, int);
@@ -23,6 +38,8 @@ static bool verify_read (char *, int);
 static bool verify_write (char *, int);
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
+static mapid_t allocate_mapid (void);
+static bool is_mapping_valid (void *, struct file *);
 
 static void halt (void);
 static void exit (void *);
@@ -37,6 +54,8 @@ static uint32_t write (void *);
 static void seek (void *);
 static uint32_t tell (void *);
 static void close (void *);
+static uint32_t mmap (void *);
+static void munmap (void *);
 
 void
 syscall_init (void) 
@@ -65,6 +84,8 @@ syscall_handler (struct intr_frame *f)
     case SYS_SEEK: seek (f->esp); break;   
     case SYS_TELL: f->eax = tell (f->esp); break;   
     case SYS_CLOSE: close (f->esp); break;
+    case SYS_MMAP: f->eax = mmap (f->esp); break;
+    case SYS_MUNMAP: munmap (f->esp); break;
     }
 }
 
@@ -182,6 +203,44 @@ put_user (uint8_t *udst, uint8_t byte)
   asm ("movl $1f, %0; movb %b2, %1; 1:"
        : "=&a" (error_code), "=m" (*udst) : "q" (byte));
   return error_code != -1;
+}
+
+/* Returns an map identifier to use for a new mapping. */
+static mapid_t
+allocate_mapid (void) 
+{
+  static mapid_t next_mapid = 1;
+  mapid_t mapid;
+
+  lock_acquire (&mapid_lock);
+  mapid = next_mapid++;
+  lock_release (&mapid_lock);
+
+  return mapid;
+}
+
+/* Checks a file-memory mapping for FILE starting from ADDR is valid or not. */
+static bool
+is_mapping_valid (void *addr, struct file *file)
+{
+  if (file == NULL 
+      || file_length (file) == 0 
+      || pg_ofs (addr) != 0 
+      || addr == NULL)
+    return false;
+
+  struct process *this = thread_current ()->process;
+  int pages = file_length (file) / PGSIZE + 1;
+
+  for (int i = 0; i < pages; i++)
+    {
+      void *upage = addr + i * PGSIZE;
+
+      if (pagerec_get_page (this->pagerec, upage) != NULL)
+        return false;
+    }
+
+  return true;
 }
 
 /* System call handler for halt(). */
@@ -371,4 +430,76 @@ close (void *esp)
   struct file *fp = retrieve_fp (fd);
 
   file_close (fp);
+}
+
+/* System call handler for mmap(). */
+static uint32_t
+mmap (void *esp)
+{
+  int fd = (int) dereference (esp, 1, WORD_SIZE);
+  uint8_t *addr = (uint8_t *) dereference (esp, 2, WORD_SIZE);
+
+  struct file *file = file_reopen (retrieve_fp (fd));
+  struct process *this = thread_current ()->process;
+
+  ASSERT (this != NULL);
+
+  if (!is_mapping_valid (addr, file))
+    return MAP_FAILED;
+
+  struct mapping *mapping = (struct mapping *) malloc (sizeof (struct mapping));
+
+  mapping->uaddr = addr;
+  mapping->file = file;
+  mapping->mapid = allocate_mapid ();
+  mapping->pages = file_length (file) / PGSIZE + 1;
+
+  for (off_t offset = 0; offset < file_length (file); offset += PGSIZE)
+    {
+      size_t size = file_length (file) - offset >= PGSIZE 
+                    ? PGSIZE 
+                    : file_length (file) - offset;
+
+      /* TODO: Is it safe to set writable flag to true? */
+      struct page *page = page_from_file (addr + offset, true, file, offset, size);
+      pagerec_set_page (this->pagerec, page);
+    }
+  
+  list_push_back (&this->mappings, &mapping->elem);
+  return mapping->mapid;
+}
+
+/* System call handler for munmap(). */
+static void
+munmap (void *esp)
+{
+  mapid_t mapid = (mapid_t) dereference (esp, 1, WORD_SIZE);
+
+  struct mapping *mapping = NULL;
+  struct process *this = thread_current ()->process;
+
+  for (struct list_elem *e = list_begin (&this->mappings); 
+       e != list_end (&this->mappings);
+       e = list_next (e))
+    {
+      mapping = list_entry (e, struct mapping, elem);
+
+      if (mapping->mapid == mapid)
+        break;
+    }
+
+  if (mapping == NULL || mapping->mapid != mapid)
+    return;
+
+  for (int i = 0; i < mapping->pages; i++)
+    {
+      struct page *page = 
+        pagerec_get_page (this->pagerec, mapping->uaddr + i * PGSIZE);
+
+      page_swap_out (page);
+      pagerec_clear_page (this->pagerec, page);
+    }
+  
+  file_close (mapping->file);
+  free (mapping);
 }

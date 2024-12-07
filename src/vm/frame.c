@@ -7,7 +7,7 @@
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
 
-/* Global frame table. */
+/* Global frame list. */
 struct list frames;
 
 /* Lock for frame table. */
