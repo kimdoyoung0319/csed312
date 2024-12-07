@@ -86,7 +86,9 @@ pagerec_clear_page (struct pagerec *rec, struct page *page)
 }
 
 /* Makes a new page that alreay lies in the memory, with address of UADDR and
-   WRITABLE flag. 
+   WRITABLE flag. Since this assumes the new page is already in the physical
+   memory, the caller must allocate a frame for this page right after calling 
+   it.
    
    The size of new page will be the maximum value of a page size. The page 
    directory of new page will be automatically set to the page directory of 

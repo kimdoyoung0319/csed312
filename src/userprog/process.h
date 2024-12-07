@@ -34,6 +34,7 @@ struct process
     struct list opened;           /* List of opened files. */
 
     struct pagerec *pagerec;      /* Page records. */
+    uint8_t *esp;                    /* Saved user stack pointer. */
   };
 
 void process_init (void);

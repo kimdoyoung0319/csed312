@@ -8,6 +8,11 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "vm/frame.h"
+#include "vm/page.h"
+
+/* Limitation of user stack. */
+#define USER_STACK_BOUNDARY ((uint8_t *) PHYS_BASE - 8 * 1024 * 1024)
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -127,10 +132,10 @@ kill (struct intr_frame *f)
 static void
 page_fault (struct intr_frame *f) 
 {
-  bool not_present;  /* True: not-present page, false: writing r/o page. */
-  bool write;        /* True: access was write, false: access was read. */
-  bool user;         /* True: access by user, false: access by kernel. */
-  void *fault_addr;  /* Fault address. */
+  bool not_present;     /* True: not-present page, false: writing r/o page. */
+  bool write;           /* True: access was write, false: access was read. */
+  bool user;            /* True: access by user, false: access by kernel. */
+  uint8_t *fault_addr;  /* Fault address. */
 
   /* Obtain faulting address, the virtual address that was
      accessed to cause the fault.  It may point to code or to
@@ -153,21 +158,26 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  void *uaddr = pg_round_down (fault_addr);
+  struct process *this = thread_current ()->process; 
+
+  if (is_user_vaddr (f->esp))
+    this->esp = f->esp;
+
+  if (fault_addr >= USER_STACK_BOUNDARY && this->esp - fault_addr <= 32)
+    {
+      struct page *st = page_from_memory (uaddr, true);
+      pagerec_set_page (this->pagerec, st);
+      pagedir_set_page (this->pagedir, uaddr, frame_allocate (st), true);
+      
+      return;
+    }
+
   /* If it is caused by invalid address passed to the kernel, kill user process
      while making no harm to the kernel. */
   if (is_user_vaddr (fault_addr) && !user)
     process_exit (-1);
 
-  struct process *this = thread_current ()->process; 
-
-  /* TODO: Modify this to handle the situation where the kernel raises page 
-           fault. */
-  /* TODO: Modify this to detect stack growth situation. */
-  /* TODO: Modify this to do sanity checking. */
-  if (this == NULL)
-    kill (f);
-
-  void *uaddr = pg_round_down (fault_addr);
   struct page *upage = pagerec_get_page (this->pagerec, uaddr);
 
   if (upage == NULL 
@@ -177,3 +187,7 @@ page_fault (struct intr_frame *f)
 
   page_swap_in (upage);
 }
+  /* TODO: Modify this to handle the situation where the kernel raises page 
+           fault. */
+  /* TODO: Modify this to detect stack growth situation. */
+  /* TODO: Modify this to do sanity checking. */
