@@ -229,6 +229,8 @@ page_swap_in (struct page *page)
   if (kpage == NULL)
     return NULL;
 
+  /* If the page's size is zero, there's no need to fetch it from block 
+     devices. */
   if (page->size == 0)
     goto finish;
 
@@ -339,6 +341,8 @@ page_is_dirty (struct page *page)
   return pagedir_is_dirty (page->pagedir, page->uaddr);
 }
 
+/* Destroys a single page associated with E. Used to destroy all pages in a 
+   supplemental page table. */
 static void
 free_page (struct hash_elem *e, void *aux UNUSED)
 {
