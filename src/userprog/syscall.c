@@ -66,6 +66,7 @@ syscall_init (void)
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   lock_init (&filesys_lock);
+  lock_init (&mapid_lock);
 }
 
 static void
@@ -223,7 +224,8 @@ allocate_mapid (void)
   return mapid;
 }
 
-/* Checks a file-memory mapping for FILE starting from ADDR is valid or not. */
+/* Checks if a file-memory mapping for FILE starting from ADDR is valid or 
+   not. */
 static bool
 is_mapping_valid (void *addr, struct file *file)
 {
@@ -404,6 +406,7 @@ write (void *esp)
       return (uint32_t) size;
     }
   
+  /* Also for write(), we make kernel buffer to prevent page fault. */
   uint32_t result;
   void *buffer_ = (void *) malloc (size);
 
@@ -460,13 +463,15 @@ mmap (void *esp)
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   uint8_t *addr = (uint8_t *) dereference (esp, 2, WORD_SIZE);
 
-  struct file *file = file_reopen (retrieve_fp (fd));
+  struct file *file = retrieve_fp (fd);
   struct process *this = thread_current ()->process;
 
   ASSERT (this != NULL);
 
   if (!is_mapping_valid (addr, file))
     return MAP_FAILED;
+
+  file = file_reopen (file);
 
   struct mapping *mapping = (struct mapping *) malloc (sizeof (struct mapping));
 
@@ -481,8 +486,8 @@ mmap (void *esp)
                     ? PGSIZE 
                     : file_length (file) - offset;
 
-      /* TODO: Is it safe to set writable flag to true? */
-      struct page *page = page_from_file (addr + offset, true, file, offset, size);
+      struct page *page = 
+        page_from_file (addr + offset, true, file, offset, size);
       pagerec_set_page (this->pagerec, page);
     }
   
@@ -512,15 +517,21 @@ munmap (void *esp)
   if (mapping == NULL || mapping->mapid != mapid)
     return;
 
-  for (int i = 0; i < mapping->pages; i++)
+  for (int offset = 0; offset < mapping->pages * PGSIZE; offset += PGSIZE)
     {
       struct page *page = 
-        pagerec_get_page (this->pagerec, mapping->uaddr + i * PGSIZE);
+        pagerec_get_page (this->pagerec, mapping->uaddr + offset);
+      
+      if (page->state == PAGE_SWAPPED)
+        page_swap_in (page);
 
-      page_swap_out (page);
+      if (page->state == PAGE_PRESENT)
+        page_unload (page);
+
       pagerec_clear_page (this->pagerec, page);
     }
   
   file_close (mapping->file);
+  list_remove (&mapping->elem);
   free (mapping);
 }

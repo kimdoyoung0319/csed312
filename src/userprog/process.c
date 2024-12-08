@@ -241,6 +241,7 @@ make_process (struct process *par, struct thread *t)
   this->waited = false;
   list_init (&this->children);
   list_init (&this->opened);
+  list_init (&this->mappings);
   this->pagerec = pagerec_create ();
 
   t->process = this;
