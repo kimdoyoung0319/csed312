@@ -1,7 +1,6 @@
 #include "vm/page.h"
 #include <hash.h>
 #include <string.h>
-#include "filesys/inode.h"
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
@@ -223,8 +222,8 @@ page_swap_out (struct page *page)
   ASSERT (page != NULL);
   ASSERT (page->state == PAGE_PRESENT);
 
-  uint8_t *kaddr = pagedir_get_page (page->pagedir, page->uaddr);
-  pagedir_clear_page (page->pagedir, page->uaddr);
+  uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
+  uint8_t *kaddr = kpage;
 
   struct block *block = block_get_role (BLOCK_SWAP);
   block_sector_t slot = swap_allocate ();
@@ -239,7 +238,8 @@ page_swap_out (struct page *page)
 
   page->state = PAGE_SWAPPED;
   page->sector = slot;
-  /* TODO: Should frame_free() be called here? */
+  pagedir_clear_page (page->pagedir, page->uaddr);
+  frame_free (kpage);
 }
 
 /* Loads PAGE into a physical frame. PAGE must be in the unloaded state and
@@ -265,7 +265,7 @@ page_load (struct page *page)
 
 /* Unloads, or writes back PAGE into the underlying file. It evicts PAGE from 
    the page directory associated with it. PAGE must be in the present state and 
-   must not be a null pointer, and must have file associate with it. */
+   must not be a null pointer, and must have file associated with it. */
 void
 page_unload (struct page *page)
 {
@@ -279,7 +279,7 @@ page_unload (struct page *page)
 
   page->state = PAGE_UNLOADED;
   pagedir_clear_page (page->pagedir, page->uaddr);
-  /* TODO: Should frame_free() be called here? */
+  frame_free (kpage);
 }
 
 /* Returns true if this page is accessed. */
@@ -301,7 +301,7 @@ page_is_dirty (const struct page *page)
 }
 
 /* Destroys a single page associated with E. Used to destroy all pages in a 
-   supplemental page table. */
+   page record. */
 static void
 free_page (struct hash_elem *e, void *aux UNUSED)
 {

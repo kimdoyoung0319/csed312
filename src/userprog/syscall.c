@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <syscall-nr.h>
 #include <mapid.h>
+#include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -371,7 +372,17 @@ read (void *esp)
       return (uint32_t) size;
     }
 
-  return (uint32_t) file_read (fp, buffer, size);
+  /* Since page fault might occur when we directly pass BUFFER into 
+     file_read(), we make another buffer in kernel region and fetch on it 
+     first. */
+  uint32_t result;
+  void *buffer_ = malloc (size);
+  result = (uint32_t) file_read (fp, buffer_, size);
+
+  memcpy (buffer, buffer_, size);
+  free (buffer_);
+  
+  return result;
 }
 
 /* System call handler for write(). Returns 0 if it cannot write any byte at 
@@ -392,8 +403,15 @@ write (void *esp)
       putbuf ((char *) buffer, size);
       return (uint32_t) size;
     }
+  
+  uint32_t result;
+  void *buffer_ = (void *) malloc (size);
 
-  return (uint32_t) file_write (fp, buffer, size);
+  memcpy (buffer_, buffer, size);
+  result = (uint32_t) file_write (fp, buffer_, size);
+  free (buffer_);
+
+  return result;
 }
 
 /* System call handler for seek(). */

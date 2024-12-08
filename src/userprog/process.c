@@ -335,9 +335,6 @@ process_exit (int status)
 
   this->status = status;
 
-  /* Destroys page record. */
-  pagerec_destroy (this->pagerec);
-
   /* This is to maintain consistency of process structures. Interrupt will be 
      enabled after thread_exit() call which causes context switch. */
   intr_disable ();
@@ -355,6 +352,10 @@ process_exit (int status)
 
       e = next;
     }
+
+  /* Destroys page record. */
+  if (this->pagerec != NULL)
+    pagerec_destroy (this->pagerec);
   
   /* Close opened files. */
   for (e = list_begin (&this->opened); e != list_end (&this->opened); )
@@ -471,11 +472,16 @@ load (const char *file_name, void (**eip) (void), void **esp)
   lock_acquire (&filesys_lock);
   file = filesys_open (file_name);
   lock_release (&filesys_lock);
+
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+
+  /* Reopens file to give separate reference of the executable for each 
+     process. */
+  file = file_reopen (file);
   file_deny_write (file);
 
   /* Read and verify executable header. */

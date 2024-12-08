@@ -64,7 +64,6 @@ frame_allocate (struct page *page)
 
   /* Copies accessed bits from page table entries. */
   lock_acquire (&frames_lock);
-
   for (e = list_begin (&frames); e != list_end (&frames); e = list_next (e))
     {
       frame = list_entry (e, struct frame, elem);
@@ -90,10 +89,10 @@ frame_allocate (struct page *page)
         e = list_next (e);
     }
   list_remove (&frame->elem);
+  lock_release (&frames_lock);
+
   page_swap_out (frame->page);
   palloc_free_page (frame->kaddr);
-
-  lock_release (&frames_lock);
 
   /* At this point, there's at least one free frame. Reset frame 
      informations. */
