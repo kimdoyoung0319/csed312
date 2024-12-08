@@ -90,7 +90,7 @@ frame_allocate (struct page *page)
         e = list_next (e);
     }
   list_remove (&frame->elem);
-  page_evict (frame->page);
+  page_swap_out (frame->page);
   palloc_free_page (frame->kaddr);
 
   lock_release (&frames_lock);

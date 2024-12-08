@@ -158,7 +158,7 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  void *uaddr = pg_round_down (fault_addr);
+  void *uaddr = pg_round_down (fault_addr);  
   struct process *this = thread_current ()->process; 
   struct page *upage = pagerec_get_page (this->pagerec, uaddr);
 

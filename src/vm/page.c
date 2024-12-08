@@ -282,22 +282,6 @@ page_unload (struct page *page)
   /* TODO: Should frame_free() be called here? */
 }
 
-/* Evicts PAGE. If PAGE is not from a file, it goes into swap device. If PAGE 
-   is from file and is dirty, it also goes into swap device. Else, i.e. if the
-   page is from file and is not dirty, it only changes its state. 
-   
-   PAGE should be present. */
-void
-page_evict (struct page *page)
-{
-  ASSERT (page->state == PAGE_PRESENT);
-
-  if (page->file == NULL || page_is_dirty (page))
-    page_swap_out (page);
-  else
-    page_unload (page);
-}
-
 /* Returns true if this page is accessed. */
 bool
 page_is_accessed (const struct page *page)
