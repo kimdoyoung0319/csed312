@@ -285,15 +285,16 @@ finish:
 /* Swap PAGE out from the memory. This function writes the sector number 
    to which the page is swap out into PAGE, so the caller does not need to take 
    care of it. Also, it sets the present bit of the page directory entry 
-   associated with PAGE to 0. PAGE must be in either present or loaded state. */
+   associated with PAGE to 0. PAGE must be in either present or loaded state 
+   and must not be a null pointer. */
 void
 page_swap_out (struct page *page)
 {
+  ASSERT (page != NULL);
   ASSERT (page->state == PAGE_LOADED || page->state == PAGE_PRESENT);
 
   struct block *block;
   block_sector_t slot, sector;
-  uint8_t *base = page->uaddr;
   void *kaddr = pagedir_get_page (page->pagedir, page->uaddr);
   bool should_write_back;
 
@@ -316,7 +317,7 @@ page_swap_out (struct page *page)
 
   if (should_write_back)
     for (sector = 0; sector < PGSIZE / BLOCK_SECTOR_SIZE; sector++)
-      block_write (block, slot + sector, base + sector * BLOCK_SECTOR_SIZE);
+      block_write (block, slot + sector, kaddr + sector * BLOCK_SECTOR_SIZE);
 
   pagedir_clear_page (page->pagedir, page->uaddr);
   frame_free (kaddr);
