@@ -31,15 +31,13 @@ block_sector_t
 swap_allocate (void)
 {
   lock_acquire (&swap_table_lock);
-  size_t free_slot = bitmap_scan (swap_table, 0, 1, false);
+  size_t free_slot = bitmap_scan_and_flip (swap_table, 0, 1, false);
+  lock_release (&swap_table_lock);
 
   if (free_slot == BITMAP_ERROR)
     PANIC ("Failed to allocate swap slot.");
   
-  bitmap_set (swap_table, free_slot, true);
-  lock_release (&swap_table_lock);
-
-  return free_slot * BLOCK_SECTOR_SIZE;
+  return free_slot * PGSIZE / BLOCK_SECTOR_SIZE;
 }
 
 /* Frees SLOT from swap table. SLOT should not be page aligned, but this
@@ -50,7 +48,5 @@ swap_free (block_sector_t slot_)
 {
   size_t slot = slot_ / BLOCK_SECTOR_SIZE;
 
-  lock_acquire (&swap_table_lock);
-  bitmap_set (swap_table, slot, false);
-  lock_release (&swap_table_lock);
+  bitmap_reset (swap_table, slot);
 }

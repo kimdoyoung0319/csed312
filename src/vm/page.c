@@ -228,13 +228,11 @@ page_swap_out (struct page *page)
   block_sector_t sector, slot = swap_allocate ();
   uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
 
-  if (page_is_dirty (page))
-    {
-      for (sector = 0; sector < PGSIZE / BLOCK_SECTOR_SIZE; sector++)
-        block_write (block, slot + sector, kpage + sector * BLOCK_SECTOR_SIZE);
-    }
+  for (sector = 0; sector < PGSIZE / BLOCK_SECTOR_SIZE; sector++)
+    block_write (block, slot + sector, kpage + sector * BLOCK_SECTOR_SIZE);
 
   page->state = PAGE_SWAPPED;
+  page->sector = slot;
   pagedir_clear_page (page->pagedir, page->uaddr);
   /* TODO: Should frame_free() be called here? */
 }
