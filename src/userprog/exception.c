@@ -160,13 +160,15 @@ page_fault (struct intr_frame *f)
 
   void *uaddr = pg_round_down (fault_addr);
   struct process *this = thread_current ()->process; 
+  struct page *upage = pagerec_get_page (this->pagerec, uaddr);
 
   /* Save stack pointer on the initial transition to kernel mode. */
   if (is_user_vaddr (f->esp))
     this->esp = f->esp;
   
   /* Extend stack when stack growth is needed. */
-  if (fault_addr >= USER_STACK_BOUNDARY 
+  if (upage == NULL
+      && fault_addr >= USER_STACK_BOUNDARY 
       && this->esp - fault_addr <= 32 
       && this->esp >= fault_addr)
     {
@@ -180,8 +182,6 @@ page_fault (struct intr_frame *f)
   /* Do sanity checking, load page, exit the user process if it's faulty. */
   if (not_present)
     {
-      struct page *upage = pagerec_get_page (this->pagerec, uaddr);
-
       if (upage == NULL || upage->state == PAGE_PRESENT)
         process_exit (-1);
 

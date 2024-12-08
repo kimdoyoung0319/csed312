@@ -1,7 +1,7 @@
 #include "vm/frame.h"
 #include <stdbool.h>
 #include <list.h>
-#include <stdio.h> // TODO: Delete this after debugging. 
+#include <stdio.h> // TODO: Remove this after debugging.
 #include "threads/palloc.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
@@ -64,6 +64,7 @@ frame_allocate (struct page *page)
 
   /* Copies accessed bits from page table entries. */
   lock_acquire (&frames_lock);
+
   for (e = list_begin (&frames); e != list_end (&frames); e = list_next (e))
     {
       frame = list_entry (e, struct frame, elem);
@@ -89,10 +90,10 @@ frame_allocate (struct page *page)
         e = list_next (e);
     }
   list_remove (&frame->elem);
-  lock_release (&frames_lock);
-
-  page_swap_out (frame->page);
+  page_evict (frame->page);
   palloc_free_page (frame->kaddr);
+
+  lock_release (&frames_lock);
 
   /* At this point, there's at least one free frame. Reset frame 
      informations. */

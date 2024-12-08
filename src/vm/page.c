@@ -1,7 +1,6 @@
 #include "vm/page.h"
 #include <hash.h>
 #include <string.h>
-#include <stdio.h> // TODO: Remove this after debugging.
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
@@ -194,7 +193,7 @@ page_swap_in (struct page *page)
   uint8_t *kpage = (uint8_t *) frame_allocate (page);
   uint8_t *kaddr = kpage;
 
-  if (kpage == NULL)
+  if (kaddr == NULL)
     return NULL;
 
   /* Fetch the page from the block device. */
@@ -224,16 +223,22 @@ page_swap_out (struct page *page)
   ASSERT (page != NULL);
   ASSERT (page->state == PAGE_PRESENT);
 
-  struct block *block = block_get_role (BLOCK_SWAP);
-  block_sector_t sector, slot = swap_allocate ();
-  uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
+  uint8_t *kaddr = pagedir_get_page (page->pagedir, page->uaddr);
+  pagedir_clear_page (page->pagedir, page->uaddr);
 
-  for (sector = 0; sector < PGSIZE / BLOCK_SECTOR_SIZE; sector++)
-    block_write (block, slot + sector, kpage + sector * BLOCK_SECTOR_SIZE);
+  struct block *block = block_get_role (BLOCK_SWAP);
+  block_sector_t slot = swap_allocate ();
+
+  for (block_sector_t sector = slot; 
+       sector < slot + PGSIZE / BLOCK_SECTOR_SIZE; 
+       sector++)
+    {
+      block_write (block, sector, kaddr);
+      kaddr += BLOCK_SECTOR_SIZE;
+    }
 
   page->state = PAGE_SWAPPED;
   page->sector = slot;
-  pagedir_clear_page (page->pagedir, page->uaddr);
   /* TODO: Should frame_free() be called here? */
 }
 
@@ -260,8 +265,7 @@ page_load (struct page *page)
 
 /* Unloads, or writes back PAGE into the underlying file. It evicts PAGE from 
    the page directory associated with it. PAGE must be in the present state and 
-   must not be a null pointer, and must have file associate with it. Does 
-   nothing when */
+   must not be a null pointer, and must have file associate with it. */
 void
 page_unload (struct page *page)
 {
@@ -276,6 +280,22 @@ page_unload (struct page *page)
   page->state = PAGE_UNLOADED;
   pagedir_clear_page (page->pagedir, page->uaddr);
   /* TODO: Should frame_free() be called here? */
+}
+
+/* Evicts PAGE. If PAGE is not from a file, it goes into swap device. If PAGE 
+   is from file and is dirty, it also goes into swap device. Else, i.e. if the
+   page is from file and is not dirty, it only changes its state. 
+   
+   PAGE should be present. */
+void
+page_evict (struct page *page)
+{
+  ASSERT (page->state == PAGE_PRESENT);
+
+  if (page->file == NULL || page_is_dirty (page))
+    page_swap_out (page);
+  else
+    page_unload (page);
 }
 
 /* Returns true if this page is accessed. */

@@ -46,7 +46,7 @@ swap_allocate (void)
 void
 swap_free (block_sector_t slot_)
 {
-  size_t slot = slot_ / BLOCK_SECTOR_SIZE;
+  size_t slot = slot_ * BLOCK_SECTOR_SIZE / PGSIZE;
 
   bitmap_reset (swap_table, slot);
 }
