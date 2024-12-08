@@ -343,10 +343,3 @@ inode_length (const struct inode *inode)
 {
   return inode->data.length;
 }
-
-/* Returns the sector number of INODE. */
-block_sector_t
-inode_get_sector (const struct inode *inode)
-{
-  return inode->data.start;
-}
