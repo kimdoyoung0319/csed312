@@ -1,6 +1,7 @@
 #include "vm/page.h"
 #include <hash.h>
 #include <string.h>
+#include <stdio.h> // TODO: Remove this after debugging.
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
@@ -90,9 +91,8 @@ pagerec_clear_page (struct pagerec *rec, struct page *page)
    memory, the caller must allocate a frame for this page right after calling 
    it.
    
-   The size of new page will be the maximum value of a page size. The page 
-   directory of new page will be automatically set to the page directory of 
-   current page.    
+   The page directory of new page will be automatically set to the page 
+   directory of current process.    
 
    Returns a null pointer if it failed to allocate memory. UADDR must be page
    aligned. */
@@ -111,23 +111,24 @@ page_from_memory (void *uaddr, bool writable)
   page->state = PAGE_PRESENT;
   page->uaddr = uaddr;
   page->pagedir = this->pagedir;
-  page->size = PGSIZE;
   page->writable = writable;
   page->sector = 0;
+  page->file = NULL;
   page->offset = 0;
+  page->size = 0;
 
   return page;
 }
 
-/* Makes a new page from a file, which will demand paged from FILE, starting 
-   from OFFSET, with WRITABLE flag and SIZE within the page.
+/* Makes a new page from a file, which will demand paged from FILE, with 
+   WRITABLE flag and SIZE, OFFSET within the file.
 
    The page directory of the page will be automatically set to current
    process's page directory.    
 
    Returns a null pointer if it failed to allocate memory. UADDR must be page
-   aligned. FILE must not be a null pointer and OFFSET must be less than the 
-   length of FILE. SIZE must be less than or equal to PGSIZE. */ 
+   aligned. FILE must not be a null pointer and OFFSET + SIZE must be less than 
+   the length of FILE. SIZE must be less than or equal to PGSIZE. */ 
 struct page *
 page_from_file (void *uaddr, bool writable, struct file *file, 
                 off_t offset, size_t size)
@@ -138,7 +139,7 @@ page_from_file (void *uaddr, bool writable, struct file *file,
   ASSERT (this != NULL);
   ASSERT (pg_ofs (uaddr) == 0);
   ASSERT (file != NULL);
-  ASSERT (file_length (file) >= offset);
+  ASSERT (file_length (file) >= offset + (off_t) size);
   ASSERT (size <= PGSIZE);
 
   if (page == NULL)
@@ -148,52 +149,20 @@ page_from_file (void *uaddr, bool writable, struct file *file,
   page->uaddr = uaddr;
   page->pagedir = this->pagedir;
   page->writable = writable;
+  page->sector = 0;
+  page->file = file;
+  page->offset = offset;
   page->size = size;
-  page->offset = offset % BLOCK_SECTOR_SIZE;
-  page->sector = 
-    inode_get_sector (file_get_inode (file)) + offset / BLOCK_SECTOR_SIZE;
-
-  return page;
-}
-
-/* Makes a new page from the swap block, with address of UADDR and WRITABLE 
-   flag, and the sector number SECTOR within the swap block. 
-   
-   the size of new page will be the maximum value of a page size. The page 
-   directory of new page will be automatically set to the page directory of 
-   current page. 
-
-   Returns a null pointer if it failed to allocate memory. UADDR must be page
-   aligned. 
-*/
-/* TODO: Is this really needed? */
-struct page *
-page_from_swap (void *uaddr, bool writable, block_sector_t sector)
-{
-  struct page *page = (struct page *) malloc (sizeof (struct page));
-  struct process *this = thread_current ()->process;
-
-  ASSERT (this != NULL);
-  ASSERT (pg_ofs (uaddr) == 0);
-
-  if (page == NULL)
-    return NULL;
-
-  page->state = PAGE_SWAPPED;
-  page->uaddr = uaddr;
-  page->pagedir = this->pagedir;
-  page->size = PGSIZE;
-  page->writable = writable;
-  page->sector = sector;
-  page->offset = 0;
 
   return page;
 }
 
 /* Destroys PAGE, mark the page as not present in its associated page 
    directory, deleting it from current process's page record. This also evicts
-   physical page frame associated with it, if such exists. After this, accessing 
-   on PAGE will cause page fault, and the kernel won't recover from it. */
+   physical page frame associated with it, if such exists. 
+   
+   After this, accessing on PAGE will cause page fault, and the kernel won't 
+   recover from it. This does NOT close a opened file. */
 void
 page_destroy (struct page *page)
 {
@@ -211,116 +180,104 @@ page_destroy (struct page *page)
   free (page);
 }
 
-/* Fetch PAGE from the block device. The state of the page must be either 
-   unloaded or swapped out. This function adds mapping from PAGE's user address 
-   to newly allocated frame to associated page directory. Returns newly 
-   allocated kernel address if it succeed, a null pointer if failed. */
+/* Fetchs PAGE from the swap device. The state of the page must be swapped out 
+   state. This function adds mapping from PAGE's user address to newly 
+   allocated frame to associated page directory. Returns newly allocated kernel 
+   address if it succeed, a null pointer if failed. */
 void *
 page_swap_in (struct page *page)
 {
   ASSERT (page != NULL);
-  ASSERT (page->state == PAGE_SWAPPED || page->state == PAGE_UNLOADED);
+  ASSERT (page->state == PAGE_SWAPPED);
 
-  struct block *block;
+  struct block *block = block_get_role (BLOCK_SWAP);
   uint8_t *kpage = (uint8_t *) frame_allocate (page);
   uint8_t *kaddr = kpage;
-  uint8_t buffer[BLOCK_SECTOR_SIZE * 2];
 
   if (kpage == NULL)
     return NULL;
 
-  /* If the page's size is zero, there's no need to fetch it from block 
-     devices. */
-  if (page->size == 0)
-    goto finish;
-
-  /* Determine the block to be fetched according to PAGE's state. */
-  switch (page->state) 
-    {
-    case PAGE_SWAPPED: block = block_get_role (BLOCK_SWAP); break;
-    case PAGE_UNLOADED: block = block_get_role (BLOCK_FILESYS); break;
-    default: PANIC ("Loaded page cannot be swapped in again."); NOT_REACHED ();
-    }
-
-  /* Actually fetch the page from the block device. */
+  /* Fetch the page from the block device. */
   for (block_sector_t sector = page->sector; 
        sector < page->sector + PGSIZE / BLOCK_SECTOR_SIZE;
        sector++)
     {
-      if (kaddr >= kpage + page->size)
-        continue;
-
-      block_read (block, sector, buffer);
-      block_read (block, sector + 1, buffer + BLOCK_SECTOR_SIZE);
-
-      memcpy (kaddr, buffer + page->offset, BLOCK_SECTOR_SIZE);
-
-      /* If the size of the page is not sector-aligned, zero out additionally
-         fetched bytes. */
-      if (kpage + page->size - BLOCK_SECTOR_SIZE < kaddr)
-        {
-          int zero_bytes = kaddr + BLOCK_SECTOR_SIZE - kpage - page->size;
-          uint8_t *zero_addr = kpage + page->size;
-          memset (zero_addr, 0, zero_bytes);
-        }
-
+      block_read (block, sector, kaddr);
       kaddr += BLOCK_SECTOR_SIZE;
     }
 
-finish:
-  /* Fetched, or at least allocated a frame for the page. Change state and
-     make a mapping in page directory. */
-  if (page->state == PAGE_SWAPPED)
-    {
-      page->state = PAGE_PRESENT;
-      swap_free (page->sector);
-    }
-  else if (page->state == PAGE_UNLOADED)
-    page->state = PAGE_LOADED;
-
+  /* Fetched a frame for the page. Change state, free the swap slot, and make a 
+     mapping in page directory. */
+  page->state = PAGE_PRESENT;
+  swap_free (page->sector);
   pagedir_set_page (page->pagedir, page->uaddr, kpage, page->writable);
+
   return kaddr;
 }
 
-/* Swap PAGE out from the memory. This function writes the sector number 
-   to which the page is swap out into PAGE, so the caller does not need to take 
-   care of it. Also, it sets the present bit of the page directory entry 
-   associated with PAGE to 0. PAGE must be in either present or loaded state 
-   and must not be a null pointer. */
+/* Swaps PAGE out from the memory to the swap device. It evicts PAGE from the
+   page directory associated with it. PAGE must be in the present state and 
+   must not be a null pointer. */
 void
 page_swap_out (struct page *page)
 {
   ASSERT (page != NULL);
-  ASSERT (page->state == PAGE_LOADED || page->state == PAGE_PRESENT);
+  ASSERT (page->state == PAGE_PRESENT);
 
-  struct block *block;
-  block_sector_t slot, sector;
-  void *kaddr = pagedir_get_page (page->pagedir, page->uaddr);
-  bool should_write_back;
+  struct block *block = block_get_role (BLOCK_SWAP);
+  block_sector_t sector, slot = swap_allocate ();
+  uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
 
-  /* For pages that are not from a file, it should be written back into swap 
-     device, with fresh swap slot. For pages that are from a file, it should
-     be written back only when it's writable and dirty. The sector number in
-     this case will be the underlying sector number of the file. */
-  if (page->state == PAGE_PRESENT)
+  if (page_is_dirty (page))
     {
-      block = block_get_role (BLOCK_SWAP);
-      slot = swap_allocate ();
-      should_write_back = true;
-    }
-  else
-    {
-      block = block_get_role (BLOCK_FILESYS);
-      slot = page->sector;
-      should_write_back = page->writable && page_is_dirty (page);
+      for (sector = 0; sector < PGSIZE / BLOCK_SECTOR_SIZE; sector++)
+        block_write (block, slot + sector, kpage + sector * BLOCK_SECTOR_SIZE);
     }
 
-  if (should_write_back)
-    for (sector = 0; sector < PGSIZE / BLOCK_SECTOR_SIZE; sector++)
-      block_write (block, slot + sector, kaddr + sector * BLOCK_SECTOR_SIZE);
-
+  page->state = PAGE_SWAPPED;
   pagedir_clear_page (page->pagedir, page->uaddr);
-  frame_free (kaddr);
+  /* TODO: Should frame_free() be called here? */
+}
+
+/* Loads PAGE into a physical frame. PAGE must be in the unloaded state and
+   must not be a null pointer. Returns newly allocated kernel address if it 
+   succeed, a null pointer if failed. */
+void *
+page_load (struct page *page)
+{
+  ASSERT (page != NULL);
+  ASSERT (page->state == PAGE_UNLOADED);
+
+  uint8_t *kpage = frame_allocate (page);
+
+  if (kpage == NULL)
+    return NULL;
+
+  file_read_at (page->file, kpage, page->size, page->offset);
+  page->state = PAGE_PRESENT;
+  pagedir_set_page (page->pagedir, page->uaddr, kpage, page->writable);
+
+  return kpage;
+}
+
+/* Unloads, or writes back PAGE into the underlying file. It evicts PAGE from 
+   the page directory associated with it. PAGE must be in the present state and 
+   must not be a null pointer, and must have file associate with it. Does 
+   nothing when */
+void
+page_unload (struct page *page)
+{
+  ASSERT (page != NULL);
+  ASSERT (page->state == PAGE_PRESENT);
+  ASSERT (page->file != NULL);
+
+  uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
+  if (page->writable && page_is_dirty (page))
+    file_write_at (page->file, kpage, page->size, page->offset);
+
+  page->state = PAGE_UNLOADED;
+  pagedir_clear_page (page->pagedir, page->uaddr);
+  /* TODO: Should frame_free() be called here? */
 }
 
 /* Returns true if this page is accessed. */
@@ -347,6 +304,10 @@ static void
 free_page (struct hash_elem *e, void *aux UNUSED)
 {
   struct page *p = hash_entry (e, struct page, elem);
+
+  if (p->state == PAGE_PRESENT && p->file != NULL)
+    page_unload (p);
+
   page_destroy (p);
 }
 

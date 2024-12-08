@@ -650,6 +650,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *uaddr,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Make a page to be inserted to the page record. */
+      /* TODO: Fix this. */
       struct page *upage = 
         page_from_file (uaddr, writable, file, ofs, page_read_bytes);
 

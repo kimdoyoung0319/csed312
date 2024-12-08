@@ -1,6 +1,7 @@
 #include "vm/frame.h"
 #include <stdbool.h>
 #include <list.h>
+#include <stdio.h> // TODO: Delete this after debugging. 
 #include "threads/palloc.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
@@ -82,11 +83,12 @@ frame_allocate (struct page *page)
       else
         break;
 
-      if (e == list_end (&frames))
+      if (e == list_rbegin (&frames))
         e = list_begin (&frames);
       else
         e = list_next (e);
     }
+  list_remove (&frame->elem);
   lock_release (&frames_lock);
 
   page_swap_out (frame->page);
@@ -94,9 +96,13 @@ frame_allocate (struct page *page)
 
   /* At this point, there's at least one free frame. Reset frame 
      informations. */
-  frame->kaddr = palloc_get_page (PAL_USER);
+  frame->kaddr = palloc_get_page (PAL_USER | PAL_ZERO);
   frame->page = page;
   frame->accessed = false;
+
+  lock_acquire (&frames_lock);
+  list_push_back (&frames, &frame->elem);
+  lock_release (&frames_lock);
 
   return frame->kaddr;
 }
@@ -119,7 +125,10 @@ frame_free (void *kaddr)
     }
 
   if (frame == NULL || frame->kaddr != kaddr)
-    return;
+    {
+      lock_release (&frames_lock);
+      return;
+    }
   
   list_remove (&frame->elem);
   lock_release (&frames_lock);

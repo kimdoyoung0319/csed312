@@ -164,7 +164,24 @@ page_fault (struct intr_frame *f)
   /* Save stack pointer on the initial transition to kernel mode. */
   if (is_user_vaddr (f->esp))
     this->esp = f->esp;
+  
+  /* Do sanity checking, load page, exit the user process if it's faulty. */
+  if (not_present)
+    {
+      struct page *upage = pagerec_get_page (this->pagerec, uaddr);
 
+      if (upage == NULL 
+          || upage->state == PAGE_PRESENT)
+        process_exit (-1);
+
+      if (upage->state == PAGE_UNLOADED)
+        page_load (upage);
+      else if (upage->state == PAGE_SWAPPED)
+        page_swap_in (upage);
+        
+      return;
+    }
+  
   /* Extend stack when stack growth is needed. */
   if (fault_addr >= USER_STACK_BOUNDARY 
       && this->esp - fault_addr <= 32 
@@ -176,14 +193,14 @@ page_fault (struct intr_frame *f)
       
       return;
     }
-  
-  /* Do sanity checking, exit the user process if it's faulty. */
-  struct page *upage = pagerec_get_page (this->pagerec, uaddr);
 
-  if (upage == NULL 
-      || upage->state == PAGE_LOADED 
-      || upage->state == PAGE_PRESENT)
+  if (user)
     process_exit (-1);
 
-  page_swap_in (upage);
+  printf ("Page fault at %p: %s error %s page in %s context.\n",
+          fault_addr,
+          not_present ? "not present" : "rights violation",
+          write ? "writing" : "reading",
+          user ? "user" : "kernel");
+  kill (f);
 }
