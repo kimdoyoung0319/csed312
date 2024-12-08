@@ -338,7 +338,7 @@ process_exit (int status)
 
   /* This is to maintain consistency of process structures. Interrupt will be 
      enabled after thread_exit() call which causes context switch. */
-  intr_disable ();
+  enum intr_level old_level = intr_disable ();
 
   /* Exiting process's children are orphaned. Destroys dead children that 
      their parents are responsible for destroying. */
@@ -353,6 +353,8 @@ process_exit (int status)
 
       e = next;
     }
+
+  intr_set_level (old_level);
 
   /* Destroys page record. */
   if (this->pagerec != NULL)

@@ -3,6 +3,7 @@
 #include <string.h>
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
+#include "threads/palloc.h"
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
 #include "vm/frame.h"
@@ -273,10 +274,14 @@ page_unload (struct page *page)
   ASSERT (page->state == PAGE_PRESENT);
   ASSERT (page->file != NULL);
 
+  void *buffer = palloc_get_page (0);
   uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
+  memcpy (buffer, kpage, page->size);
+  
   if (page->writable && page_is_dirty (page))
-    file_write_at (page->file, kpage, page->size, page->offset);
+    file_write_at (page->file, buffer, page->size, page->offset);
 
+  palloc_free_page (buffer);
   page->state = PAGE_UNLOADED;
   pagedir_clear_page (page->pagedir, page->uaddr);
   frame_free (kpage);
