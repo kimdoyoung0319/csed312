@@ -89,7 +89,7 @@ pagerec_clear_page (struct pagerec *rec, struct page *page)
     hash_delete (&rec->records, e);
 }
 
-/* Makes a new page that alreay lies in the memory, with address of UADDR and
+/* Makes a new page that already lies in the memory, with address of UADDR and
    WRITABLE flag. Since this assumes the new page is already in the physical
    memory, the caller must allocate a frame for this page right after calling 
    it.
