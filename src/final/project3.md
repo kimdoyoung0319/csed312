@@ -20,6 +20,9 @@ struct list frames;
 /* Lock for frame table. */
 struct lock frames_lock;
 
+/* List element Pointer for clock algorithm */
+struct list_elem *hand;
+
 /* A physical frame. */
 struct frame
   {
@@ -32,7 +35,9 @@ struct frame
  RAM은 모든 프로세스 상관 없이 접근이 가능한 공유되는 자원이므로 전역적으로 
 선언했으며, 전체 프레임을 저장하기 위한 `list frames` 를 선언하였다. 또한, 전역적으로 
 관리되는 만큼 당연히 접근 시에 sync 가 중요하므로 `frames_lock` 을 함께 선언하여 lock을 
-통해서 여러 프로세스의 동시 접근을 관리하고자 한다.
+통해서 여러 프로세스의 동시 접근을 관리하고자 한다. 또한, clock 알고리즘의 보다 
+정확한 구현을 위해 이전에 참고하고 있던 List elem을 저장하고 있는 변수인
+`hand`를 선언하여 `hand` 부터 방문 여부를 확인하도록 구현하였다.
 
  또한, frame을 관리하기 위해서 필요한 정보를 담고 있는 struct frame 을 선언하였다.
 해당 frame 에서는 실제 RAM 에 할당된 페이지의 시작 주소를 가르키기 위한 *kadd,
@@ -115,21 +120,22 @@ frame_allocate (struct page *page)
     }
 
   /* Find the frame to be evicted by clock algorithm. */
-  e = list_begin (&frames);
+  e = hand;
   while (true)
     {
       frame = list_entry (e, struct frame, elem);
-
-      if (frame->accessed)
-        frame->accessed = false;
-      else
-        break;
 
       if (e == list_rbegin (&frames))
         e = list_begin (&frames);
       else
         e = list_next (e);
+
+      if (frame->accessed)
+        frame->accessed = false;
+      else
+        break;
     }
+  hand = e;
   list_remove (&frame->elem);
   lock_release (&frames_lock);
 
@@ -770,4 +776,7 @@ process_exit (int status)
 지워져야 한다고 생각이 들었다.
 
 
- 
+## Conclusion
+ 다음과 같이 나머지 모든 테스트에 대해서 성공적으로 작동하는 것을 확인할 수 있었다.
+
+ ![alt text](image-1.png)
