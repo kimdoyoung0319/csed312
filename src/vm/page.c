@@ -9,7 +9,7 @@
 #include "vm/frame.h"
 #include "vm/swap.h"
 
-/* A page records. */
+/* A page record. */
 struct pagerec 
   {
     struct hash records;
@@ -323,6 +323,8 @@ free_page (struct hash_elem *e, void *aux UNUSED)
 {
   struct page *p = hash_entry (e, struct page, elem);
 
+  /* TODO: What if P is in state of PAGE_SWAPPED? Should we bring it back to 
+           the memory? */
   if (p->state == PAGE_PRESENT && p->file != NULL)
     page_unload (p);
 
