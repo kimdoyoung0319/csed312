@@ -170,7 +170,7 @@ page_fault (struct intr_frame *f)
   if (upage == NULL
       && fault_addr >= USER_STACK_BOUNDARY 
       && this->esp - fault_addr <= 32 
-      && this->esp >= fault_addr)
+      && is_user_vaddr (fault_addr))
     {
       struct page *st = page_from_memory (uaddr, true);
       pagerec_set_page (this->pagerec, st);
