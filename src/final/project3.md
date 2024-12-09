@@ -222,8 +222,11 @@ frame_free (void *kaddr)
  상대적으로 간단한 함수이다. 기존에 할당된 프레임을 해제하는 함수로, kernel 
 에 할당된 프레임의 주소를 입력받아 그 주소를 바탕으로 프레임 테이블에 저장되어 있는 
 프레임을 삭제해주고, 실제 유저 풀에 할당된 페이지 또한 해제해주게 된다. 
-위에서 구현된 free와 allocate 모두 `frmaes_lock` 을 통해서 
-공유자원인 frames에 접근을 통제하게 된다.
+위에서 구현된 free와 allocate 모두 `frames_lock` 을 통해서 
+공유자원인 frames에 접근을 통제하게 된다. 실제 함수가 호출되는 것은 프로세스가 종료될 떄
+실행되는 함수들인 `page_desroty()`, `page_unload()` 등 에서 호출되는데, 
+중복해서 호출되더라도 frame == NULL 로 핸들링 되므로 오류가 없이 프레임 할당을 
+해제할 수 있게 작동된다.
 
 ### Differences with Design Reports
  디자인 레포트에서는 이 부분에서 조금 더 많은 역할을 담아야 할 것이라고 
