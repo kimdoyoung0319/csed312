@@ -15,6 +15,10 @@ struct pagerec
     struct hash records;
   };
 
+/* Lock to ensure consistency of the file system. Definition can be found in
+   userprog/syscall.c. */
+extern struct lock filesys_lock;
+
 static void free_page (struct hash_elem *, void * UNUSED);
 static unsigned page_hash (const struct hash_elem *, void * UNUSED);
 static bool page_less_func (const struct hash_elem *, const struct hash_elem *,
@@ -257,7 +261,10 @@ page_load (struct page *page)
   if (kpage == NULL)
     return NULL;
 
+  lock_acquire (&filesys_lock);
   file_read_at (page->file, kpage, page->size, page->offset);
+  lock_release (&filesys_lock);
+
   page->state = PAGE_PRESENT;
   pagedir_set_page (page->pagedir, page->uaddr, kpage, page->writable);
 
@@ -279,7 +286,11 @@ page_unload (struct page *page)
   memcpy (buffer, kpage, page->size);
   
   if (page->writable && page_is_dirty (page))
-    file_write_at (page->file, buffer, page->size, page->offset);
+    {
+      lock_acquire (&filesys_lock);
+      file_write_at (page->file, buffer, page->size, page->offset);
+      lock_release (&filesys_lock);
+    }
 
   palloc_free_page (buffer);
   page->state = PAGE_UNLOADED;

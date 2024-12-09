@@ -8,6 +8,7 @@
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -321,6 +322,7 @@ void
 process_exit (int status)
 {
   struct file *fp;
+  struct mapping *mapping;
   struct list_elem *e, *next;
   struct thread *cur = thread_current ();
   struct process *child, *this = cur->process;
@@ -366,6 +368,15 @@ process_exit (int status)
       next = list_remove (e);
       fp = list_entry (e, struct file, elem);
       file_close (fp);
+      e = next;
+    }
+
+  /* Free file-memory mappings. */
+  for (e = list_begin (&this->mappings); e != list_end (&this->mappings); )
+    {
+      next = list_remove (e);
+      mapping = list_entry (e, struct mapping, elem);
+      free (mapping);
       e = next;
     }
 
@@ -471,21 +482,21 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Activate page directory. */
   process_activate ();
 
-  /* Open executable file. */
+  /* Open the executable. Reopens file to give separate reference of the 
+     executable for each process. */
   lock_acquire (&filesys_lock);
   file = filesys_open (file_name);
-  lock_release (&filesys_lock);
 
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
+      lock_release (&filesys_lock);
       goto done; 
     }
 
-  /* Reopens file to give separate reference of the executable for each 
-     process. */
   file = file_reopen (file);
   file_deny_write (file);
+  lock_release (&filesys_lock);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr

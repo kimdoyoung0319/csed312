@@ -2,7 +2,6 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
-#include <mapid.h>
 #include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
@@ -11,22 +10,11 @@
 #include "devices/shutdown.h"
 #include "devices/input.h"
 #include "filesys/filesys.h"
-#include "filesys/file.h"
 #include "userprog/process.h"
 #include "userprog/pagedir.h"
 #include "vm/page.h"
 
 #define WORD_SIZE (sizeof (intptr_t))
-
-/* A file-memory mapping. */
-struct mapping
-  {
-    uint8_t *uaddr;          /* Starting user address. */
-    int pages;               /* The number of pages belong to this mapping. */
-    mapid_t mapid;           /* Mapping identifier. */
-    struct file *file;       /* File for this mapping. */
-    struct list_elem elem;   /* List element. */
-  };
 
 /* Lock to ensure consistency of the file system. */
 struct lock filesys_lock;
@@ -325,8 +313,11 @@ open (void *esp)
   struct file *fp;
   char *file = (char *) dereference (esp, 1, WORD_SIZE);
 
+  if (!verify_string (file))
+    return (uint32_t) FD_ERROR;
+
   lock_acquire (&filesys_lock);
-  if (!verify_string (file) || (fp = filesys_open (file)) == NULL)
+  if ((fp = filesys_open (file)) == NULL)
     {
       lock_release (&filesys_lock);
       return (uint32_t) FD_ERROR;
@@ -341,13 +332,18 @@ open (void *esp)
 static uint32_t 
 filesize (void *esp)
 {
+  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
     return (uint32_t) -1;
 
-  return (uint32_t) file_length (fp);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_length (fp);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for read(). Returns -1 if given file descriptor is not 
@@ -364,7 +360,7 @@ read (void *esp)
   if (!verify_write (buffer, size))
     process_exit (-1);
 
-  if (fp == NULL && fp != STDIN_FILENO)
+  if (fp == NULL && fd != STDIN_FILENO || fd == STDOUT_FILENO)
     return (uint32_t) -1;
 
   if (fd == STDIN_FILENO)
@@ -377,14 +373,16 @@ read (void *esp)
   /* Since page fault might occur when we directly pass BUFFER into 
      file_read(), we make another buffer in kernel region and fetch on it 
      first. */
-  uint32_t result;
+  uint32_t retval;
   void *buffer_ = malloc (size);
-  result = (uint32_t) file_read (fp, buffer_, size);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_read (fp, buffer_, size);
+  lock_release (&filesys_lock);
 
   memcpy (buffer, buffer_, size);
   free (buffer_);
   
-  return result;
+  return retval;
 }
 
 /* System call handler for write(). Returns 0 if it cannot write any byte at 
@@ -411,7 +409,9 @@ write (void *esp)
   void *buffer_ = (void *) malloc (size);
 
   memcpy (buffer_, buffer, size);
+  lock_acquire (&filesys_lock);
   result = (uint32_t) file_write (fp, buffer_, size);
+  lock_release (&filesys_lock);
   free (buffer_);
 
   return result;
@@ -428,7 +428,9 @@ seek (void *esp)
   if (fp == NULL)
     return;
 
+  lock_acquire (&filesys_lock);
   file_seek (fp, position);
+  lock_release (&filesys_lock);
 }
 
 /* System call handler for tell(). Returns -1 if given file descriptor is not 
@@ -436,13 +438,18 @@ seek (void *esp)
 static uint32_t
 tell (void *esp)
 {
+  uint32_t retval;
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
   if (fp == NULL)
     return (uint32_t) -1;
 
-  return (uint32_t) file_tell (fp);
+  lock_acquire (&filesys_lock);
+  retval = (uint32_t) file_tell (fp);
+  lock_release (&filesys_lock);
+
+  return retval;
 }
 
 /* System call handler for close(). Does notihing if given file descriptor is 
@@ -453,7 +460,9 @@ close (void *esp)
   int fd = (int) dereference (esp, 1, WORD_SIZE);
   struct file *fp = retrieve_fp (fd);
 
+  lock_acquire (&filesys_lock);
   file_close (fp);
+  lock_release (&filesys_lock);
 }
 
 /* System call handler for mmap(). */

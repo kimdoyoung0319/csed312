@@ -52,7 +52,6 @@ void *page_swap_in (struct page *);
 void page_swap_out (struct page *);
 void *page_load (struct page *);
 void page_unload (struct page *);
-void page_evict (struct page *);
 
 /* States of a page, stored in the page directory. */
 bool page_is_accessed (const struct page *);

@@ -193,9 +193,10 @@ page_fault (struct intr_frame *f)
       return;
     }
 
-  if (user || (!user && is_user_vaddr (fault_addr)))
+  if (is_user_vaddr (fault_addr))
     process_exit (-1);
 
+  
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",
