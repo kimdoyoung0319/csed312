@@ -200,6 +200,8 @@ page_swap_in (struct page *page)
   if (kaddr == NULL)
     return NULL;
 
+  frame_pin (kpage);
+
   /* Fetch the page from the block device. */
   for (block_sector_t sector = page->sector; 
        sector < page->sector + PGSIZE / BLOCK_SECTOR_SIZE;
@@ -208,6 +210,7 @@ page_swap_in (struct page *page)
       block_read (block, sector, kaddr);
       kaddr += BLOCK_SECTOR_SIZE;
     }
+  frame_unpin (kpage);
 
   /* Fetched a frame for the page. Change state, free the swap slot, and make a 
      mapping in page directory. */
@@ -233,6 +236,7 @@ page_swap_out (struct page *page)
   struct block *block = block_get_role (BLOCK_SWAP);
   block_sector_t slot = swap_allocate ();
 
+  frame_pin (kpage);
   for (block_sector_t sector = slot; 
        sector < slot + PGSIZE / BLOCK_SECTOR_SIZE; 
        sector++)
@@ -240,6 +244,7 @@ page_swap_out (struct page *page)
       block_write (block, sector, kaddr);
       kaddr += BLOCK_SECTOR_SIZE;
     }
+  frame_unpin (kpage);
 
   page->state = PAGE_SWAPPED;
   page->sector = slot;
@@ -261,9 +266,11 @@ page_load (struct page *page)
   if (kpage == NULL)
     return NULL;
 
+  frame_pin (kpage);
   lock_acquire (&filesys_lock);
   file_read_at (page->file, kpage, page->size, page->offset);
   lock_release (&filesys_lock);
+  frame_unpin (kpage);
 
   page->state = PAGE_PRESENT;
   pagedir_set_page (page->pagedir, page->uaddr, kpage, page->writable);
@@ -281,18 +288,17 @@ page_unload (struct page *page)
   ASSERT (page->state == PAGE_PRESENT);
   ASSERT (page->file != NULL);
 
-  void *buffer = palloc_get_page (0);
   uint8_t *kpage = pagedir_get_page (page->pagedir, page->uaddr);
-  memcpy (buffer, kpage, page->size);
+  frame_pin (kpage);
   
   if (page->writable && page_is_dirty (page))
     {
       lock_acquire (&filesys_lock);
-      file_write_at (page->file, buffer, page->size, page->offset);
+      file_write_at (page->file, kpage, page->size, page->offset);
       lock_release (&filesys_lock);
     }
 
-  palloc_free_page (buffer);
+  frame_unpin (kpage);
   page->state = PAGE_UNLOADED;
   pagedir_clear_page (page->pagedir, page->uaddr);
   frame_free (kpage);

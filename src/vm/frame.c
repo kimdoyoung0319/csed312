@@ -1,7 +1,7 @@
+/* TODO: Change frame table implementation into array-based. */
 #include "vm/frame.h"
 #include <stdbool.h>
 #include <list.h>
-#include <stdio.h> // TODO: Remove this after debugging.
 #include "threads/palloc.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
@@ -20,10 +20,11 @@ struct list_elem *hand;
 /* A physical frame. */
 struct frame
   {
-    void *kaddr;
-    struct page *page;
-    bool accessed;
-    struct list_elem elem;
+    void *kaddr;                /* Kernel address of this frame. */
+    struct page *page;          /* Page associated with this frame. */
+    bool accessed;              /* Is accessed? */
+    bool pinned;                /* Is pinned? */
+    struct list_elem elem;      /* List element for global frame list. */
   };
 
 /* Initialize global frame table. */
@@ -52,6 +53,7 @@ frame_allocate (struct page *page)
       frame->accessed = false;
       frame->page = page;
       frame->kaddr = kaddr;
+      frame->pinned = false;
 
       lock_acquire (&frames_lock);
       list_push_back (&frames, &frame->elem);
@@ -89,10 +91,10 @@ frame_allocate (struct page *page)
         e = list_begin (&frames);
       else
         e = list_next (e);
-      
+
       if (frame->accessed)
         frame->accessed = false;
-      else
+      else if (!frame->pinned)
         break;
     }
   hand = e;
@@ -116,7 +118,8 @@ frame_allocate (struct page *page)
 }
 
 /* Frees a physical frame associated with KADDR. If the frame for KADDR is
-   not registered into the frame table, does nothing. */
+   not registered to the frame table, does nothing. KADDR must be 
+   page-aligned.*/
 void
 frame_free (void *kaddr)
 {
@@ -143,4 +146,62 @@ frame_free (void *kaddr)
 
   palloc_free_page (frame->kaddr);
   free (frame);
+}
+
+/* Atomically pin a frame associated with KADDR. If there's no such frame 
+   asssociated with KADDR, does nothing. KADDR must be page-aligned. */
+void
+frame_pin (void *kaddr)
+{
+  lock_acquire (&frames_lock);
+  
+  struct list_elem *e;
+  struct frame *frame = NULL;
+
+  for (e = list_begin (&frames); e != list_end (&frames); e = list_next (e))
+    {
+      frame = list_entry (e, struct frame, elem);
+
+      if (frame->kaddr == kaddr)
+        break;
+    }
+
+  if (frame == NULL || frame->kaddr != kaddr)
+    {
+      lock_release (&frames_lock);
+      return;
+    }
+  
+  frame->pinned = true;
+
+  lock_release (&frames_lock);
+}
+
+/* Atomically unpin a frame associated with KADDR. If there's no such frame 
+   asssociated with KADDR, does nothing. */
+void
+frame_unpin (void *kaddr)
+{
+  lock_acquire (&frames_lock);
+  
+  struct list_elem *e;
+  struct frame *frame = NULL;
+
+  for (e = list_begin (&frames); e != list_end (&frames); e = list_next (e))
+    {
+      frame = list_entry (e, struct frame, elem);
+
+      if (frame->kaddr == kaddr)
+        break;
+    }
+
+  if (frame == NULL || frame->kaddr != kaddr)
+    {
+      lock_release (&frames_lock);
+      return;
+    }
+  
+  frame->pinned = false;
+
+  lock_release (&frames_lock);
 }
