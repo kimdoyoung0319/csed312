@@ -14,6 +14,9 @@ struct list frames;
 /* Lock for frame table. */
 struct lock frames_lock;
 
+/* List element Pointer for clock algorithm */
+struct list_elem *hand;
+
 /* A physical frame. */
 struct frame
   {
@@ -52,6 +55,10 @@ frame_allocate (struct page *page)
 
       lock_acquire (&frames_lock);
       list_push_back (&frames, &frame->elem);
+
+      if (hand == NULL)
+        hand = list_begin (&frames);
+
       lock_release (&frames_lock);
 
       return kaddr;
@@ -73,21 +80,22 @@ frame_allocate (struct page *page)
     }
 
   /* Find the frame to be evicted by clock algorithm. */
-  e = list_begin (&frames);
+  e = hand;
   while (true)
     {
       frame = list_entry (e, struct frame, elem);
-
-      if (frame->accessed)
-        frame->accessed = false;
-      else
-        break;
 
       if (e == list_rbegin (&frames))
         e = list_begin (&frames);
       else
         e = list_next (e);
+      
+      if (frame->accessed)
+        frame->accessed = false;
+      else
+        break;
     }
+  hand = e;
   list_remove (&frame->elem);
   lock_release (&frames_lock);
 
